@@ -1,0 +1,6 @@
+{
+  "name": "Intern Check-in",
+  "description": "Intern attendance tracking, GPS check-in, manager review approvals, and payroll operations system.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

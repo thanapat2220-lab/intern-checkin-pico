@@ -1,0 +1,15 @@
+export const ASSET_IMAGES = {
+  sarahChen: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAfuucexE4uBfcuT1C20j2vaTtNd8XH2GifchFxhcMiPXyPcPY9Lcj0-UhI4ftLCwMT4Bl1hHApPFbnkUVXWz80LK8HOTZn8Ms6PfVkJ421pDcekyANR11vzqHuiShZAEevpW1Xg-EdLHP-kgcjNnJavHRUUj3Ukc0UK8RPJfJhm-C18YDrCcwf6g5-at4J5NQE64wGVK_JnaSW_w1KdxGY5IXcqe3UEVvk0sr3-aPHmYfLAKcHlktMYw',
+  hrLogo: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBlTEOcu-RJxs65xkY12POBJDoH6qXXFGyxPmWK7horPUUx4d4pP2UFXW7_O38at1t6cHAE8rwWmbqqTEsakMdvT9hJIQY8fraQHhBUkukt48tosHdnXCwG_7fY5jihyBH8WSmOG50meRsgVqFjnLwSVwhJWKubkU0O-MTZ3EKutxHmFlA3n1vMzAbDyehSl5AWTRjXCO_eaTXLtHpKnFtcXBF7hy3quRJ9sUoG9uR2-dVrwTjVDprnJQ',
+  supervisor: 'https://lh3.googleusercontent.com/aida-public/AB6AXuC7yI8w5rqQnYOvJ8S6GvLI8dTT2_zDlHeXoIzNlad8avDD4h1nVBvTikQaPjBvrm13Ao7ck5RJfK4PrhF1CmE884MWZouxEpZ7BUXrTSQEa5v4HD-iNHZUrVBl4Gw4i93WRSp2ts9E7K9m4MfmV--N5-4xB3CR31LpPmclBJfzW0ZguWFdMP_-HykYnk9aSlTADU8qIMk1NqcRwrqy5ILxXbJ7UaY89ycW-2Dk43ODOIEn5aVt32gQcg',
+  michaelScott: 'https://lh3.googleusercontent.com/aida-public/AB6AXuDyjf6InJchwag3I9JIwGOPqL5CC4WfL-6-GOhe_1zOXRQJY_a_ne0uDd9AjDqyv-PfylXTx49T9tOaqhWQrGmlFrhTAHbJ72kSFRRCBHACmR2PziBK3QVvSOrBcjeWqpQ2ETQMiVnHdwLZXuSyS-C7Z5dnSJwIhyxNz72DXrjzx5RHMJPv2em2mjtZBoiGHttD9kbVDUyzuznxvWFIQsU1gw2dH_O-tbidMvE7PlaargHe4iNGui1hng',
+  admin: 'https://lh3.googleusercontent.com/aida-public/AB6AXuD5xQ6UHB9UdhToOxGfQnh2jbfZ45Un7D3c3YytJriWaPt6UJOmaDTQ2qGCuIgWDdhcfzU5GoG34YlGSlu8DjB0wUCjAfkxLp6pO4KsW4ZJi0rctu9d2cphxgFReyWV7lrFNPcReE_Ssh13V1BCr-MRGfkrMctOJ3-wPH1Z62xidMzPTbUdU3bySfXXe_EW8TqlXatlqP_sBFe4f2sLBNYxF4yimtHoh1Hq_FTPWGbj0fai2qD3hTVT4Q',
+};
+
+export const OFFICE_COORDINATES = {
+  lat: 13.7563,
+  lng: 100.5018,
+  name: 'Headquarters - Bangkok HQ',
+  radiusMeters: 150,
+};
+

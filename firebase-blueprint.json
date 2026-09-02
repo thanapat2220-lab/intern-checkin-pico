@@ -1,0 +1,123 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile representation for interns, supervisors, and payroll admins.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["intern", "supervisor", "payroll_admin"] },
+        "department": { "type": "string" },
+        "team": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "initials": { "type": "string" },
+        "internshipPeriod": { "type": "string" },
+        "dailyRateTHB": { "type": "number" },
+        "bankName": { "type": "string" },
+        "accountNumber": { "type": "string" },
+        "supervisorId": { "type": "string" },
+        "supervisorName": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "role"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily attendance check-in and check-out logs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "internId": { "type": "string" },
+        "monthYear": { "type": "string" },
+        "date": { "type": "number" },
+        "monthName": { "type": "string" },
+        "dayOfWeek": { "type": "string" },
+        "checkInTime": { "type": "string" },
+        "checkOutTime": { "type": "string" },
+        "totalDuration": { "type": "string" },
+        "totalMinutes": { "type": "number" },
+        "status": { "type": "string" },
+        "locationType": { "type": "string", "enum": ["office", "outside"] },
+        "locationNote": { "type": "string" }
+      },
+      "required": ["id", "internId", "monthYear", "date", "checkInTime", "locationType"]
+    },
+    "MonthlyReview": {
+      "title": "MonthlyReview",
+      "description": "Aggregated monthly timecards and supervisor approvals.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "internId": { "type": "string" },
+        "name": { "type": "string" },
+        "monthYear": { "type": "string" },
+        "daysLogged": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved"] },
+        "supervisorId": { "type": "string" },
+        "supervisorName": { "type": "string" }
+      },
+      "required": ["id", "internId", "name", "monthYear", "daysLogged", "status"]
+    },
+    "PayrollRecord": {
+      "title": "PayrollRecord",
+      "description": "Monthly payroll export records with calculated compensation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "internId": { "type": "string" },
+        "name": { "type": "string" },
+        "department": { "type": "string" },
+        "dailyRateTHB": { "type": "number" },
+        "daysWorked": { "type": "number" },
+        "totalAmountTHB": { "type": "number" },
+        "bankName": { "type": "string" },
+        "accountNumber": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Paid"] },
+        "monthYear": { "type": "string" }
+      },
+      "required": ["id", "internId", "name", "dailyRateTHB", "daysWorked", "totalAmountTHB", "status", "monthYear"]
+    },
+    "ApprovalLink": {
+      "title": "ApprovalLink",
+      "description": "Magic link authorization tokens for passwordless supervisor attendance reviews.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "internId": { "type": "string" },
+        "internName": { "type": "string" },
+        "month": { "type": "string" },
+        "supervisorId": { "type": "string" },
+        "supervisorName": { "type": "string" },
+        "supervisorEmail": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "used": { "type": "boolean" },
+        "usedAt": { "type": "string" }
+      },
+      "required": ["id", "internId", "internName", "month", "createdAt", "expiresAt", "used"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "Registered user accounts and role profiles."
+    },
+    "/attendance/{docId}": {
+      "schema": { "$ref": "AttendanceRecord" },
+      "description": "Daily check-in / check-out attendance records."
+    },
+    "/monthlyReviews/{docId}": {
+      "schema": { "$ref": "MonthlyReview" },
+      "description": "Monthly intern timecard summaries and approval states."
+    },
+    "/payroll/{docId}": {
+      "schema": { "$ref": "PayrollRecord" },
+      "description": "Payroll disbursement records."
+    },
+    "/approvalLinks/{token}": {
+      "schema": { "$ref": "ApprovalLink" },
+      "description": "Secure, single-use, time-limited magic links for supervisor approval."
+    }
+  }
+}
