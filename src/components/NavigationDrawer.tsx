@@ -113,6 +113,21 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                 </button>
               )}
 
+              {(user.role === 'payroll_admin' || user.role === 'supervisor') && (
+                <button
+                  onClick={() => {
+                    onSelectScreen('attendance_logs');
+                    onClose();
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold text-[#041b3c] hover:bg-[#e0e8ff] transition-colors text-left cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-[18px] text-[#0052cc]">
+                    list_alt
+                  </span>
+                  <span>Attendance Log (Raw)</span>
+                </button>
+              )}
+
               {(user.role === 'supervisor' || user.role === 'payroll_admin') && (
                 <button
                   onClick={() => {

@@ -5,6 +5,7 @@ import {
   PayrollRecord,
   ScreenView,
   UserProfile,
+  FinalizedPayrollCycle,
 } from './types';
 import { CheckInScreen } from './components/CheckInScreen';
 import { AttendanceHistoryScreen } from './components/AttendanceHistoryScreen';
@@ -13,10 +14,13 @@ import { SupervisorPortalScreen } from './components/SupervisorPortalScreen';
 import { PayrollExportScreen } from './components/PayrollExportScreen';
 import { ProfileScreen } from './components/ProfileScreen';
 import { InternsManagementScreen } from './components/InternsManagementScreen';
+import { AttendanceLogsScreen } from './components/AttendanceLogsScreen';
 import { PublicApprovalScreen } from './components/PublicApprovalScreen';
 import { ScreenSwitcherBar } from './components/ScreenSwitcherBar';
 import { NavigationDrawer } from './components/NavigationDrawer';
 import { DetailReviewModal } from './components/DetailReviewModal';
+import { calculateDurationStr } from './utils/attendanceLogUtils';
+import { formatMergedNotes } from './utils/noteUtils';
 
 // Firebase services
 import { listenToAuthState, logoutFromFirebase } from './services/authService';
@@ -26,6 +30,7 @@ import {
   subscribeToMonthlyReviews,
   subscribeToPayroll,
   subscribeToUsers,
+  subscribeToFinalizedPayrollCycles,
   assignSupervisorToIntern,
   addAttendanceCheckIn,
   updateAttendanceCheckOut,
@@ -48,6 +53,7 @@ export default function App() {
   const [supervisorReviews, setSupervisorReviews] = useState<InternMonthlyReview[]>([]);
   const [payrollRecords, setPayrollRecords] = useState<PayrollRecord[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
+  const [finalizedCycles, setFinalizedCycles] = useState<FinalizedPayrollCycle[]>([]);
 
   // Modals state
   const [detailModalTarget, setDetailModalTarget] = useState<InternMonthlyReview | null>(null);
@@ -99,9 +105,7 @@ export default function App() {
         }
       } else {
         setCurrentUser(null);
-        if (currentScreen !== 'public_approval') {
-          setCurrentScreen('login');
-        }
+        setCurrentScreen('login');
       }
     });
 
@@ -135,11 +139,17 @@ export default function App() {
       setAllUsers(users);
     });
 
+    // Finalized payroll cycles subscription (audit trail)
+    const unsubCycles = subscribeToFinalizedPayrollCycles((cycles) => {
+      setFinalizedCycles(cycles);
+    });
+
     return () => {
       unsubAttendance();
       unsubReviews();
       unsubPayroll();
       unsubUsers();
+      unsubCycles();
     };
   }, [currentUser]);
 
@@ -168,6 +178,8 @@ export default function App() {
 
   // Handle Check-in Action in Firestore
   const handleCheckIn = async (newRecord: AttendanceRecord) => {
+    // Optimistically update local attendance records immediately
+    setAttendanceRecords((prev) => [newRecord, ...prev.filter((r) => r.id !== newRecord.id)]);
     try {
       await addAttendanceCheckIn(newRecord);
     } catch (err) {
@@ -176,12 +188,89 @@ export default function App() {
   };
 
   // Handle Check-out Action in Firestore
-  const handleCheckOut = async (recordId: string, checkOutTime: string) => {
+  const handleCheckOut = async (recordId: string, checkOutTime: string, note?: string) => {
     try {
-      await updateAttendanceCheckOut(recordId, checkOutTime, '8h 30m', 510);
+      const targetRecord = attendanceRecords.find((r) => r.id === recordId);
+      const checkInTime = targetRecord?.checkInTime || '09:00 AM';
+      const { durationStr, totalMinutes } = calculateDurationStr(checkInTime, checkOutTime);
+      
+      const checkInNote =
+        targetRecord?.checkInNote ||
+        (targetRecord?.locationNote &&
+        targetRecord.locationNote !== 'Bangkok HQ' &&
+        targetRecord.locationNote !== 'Outside Office / Traveling' &&
+        !targetRecord.locationNote.startsWith('Bangkok HQ -')
+          ? targetRecord.locationNote
+          : targetRecord?.notes && !targetRecord.notes.startsWith('[In]')
+          ? targetRecord.notes
+          : '');
+      const checkOutNote = note !== undefined ? note.trim() : '';
+      const mergedNotes = formatMergedNotes(checkInNote, checkOutNote);
+
+      // Optimistically update local attendance records immediately
+      setAttendanceRecords((prev) =>
+        prev.map((r) =>
+          r.id === recordId
+            ? {
+                ...r,
+                checkOutTime,
+                totalDuration: durationStr,
+                totalMinutes,
+                status: 'normal',
+                checkInNote: checkInNote || r.checkInNote,
+                checkOutNote: checkOutNote || r.checkOutNote,
+                notes: mergedNotes,
+              }
+            : r
+        )
+      );
+      await updateAttendanceCheckOut(recordId, checkOutTime, durationStr, totalMinutes, note);
     } catch (err) {
       console.error('Error saving check-out to Firestore:', err);
     }
+  };
+
+  // Handle manual supervisor check-out confirmation for missing check-outs
+  const handleSupervisorConfirmCheckOut = async (recordId: string, checkOutTime: string, note?: string) => {
+    await handleCheckOut(recordId, checkOutTime, note);
+    // Also update detail modal target in-place so supervisor sees immediate confirmation
+    setDetailModalTarget((prev) => {
+      if (!prev) return null;
+      const targetRec = (prev.records || []).find((r) => r.id === recordId);
+      const checkInTime = targetRec?.checkInTime || '09:00 AM';
+      const { durationStr, totalMinutes } = calculateDurationStr(checkInTime, checkOutTime);
+      const checkInNote =
+        targetRec?.checkInNote ||
+        (targetRec?.locationNote &&
+        targetRec.locationNote !== 'Bangkok HQ' &&
+        targetRec.locationNote !== 'Outside Office / Traveling' &&
+        !targetRec.locationNote.startsWith('Bangkok HQ -')
+          ? targetRec.locationNote
+          : targetRec?.notes && !targetRec.notes.startsWith('[In]')
+          ? targetRec.notes
+          : '');
+      const checkOutNote = note !== undefined ? note.trim() : '';
+      const mergedNotes = formatMergedNotes(checkInNote, checkOutNote);
+
+      const updatedRecords = (prev.records || []).map((r) =>
+        r.id === recordId
+          ? {
+              ...r,
+              checkOutTime,
+              totalDuration: durationStr,
+              totalMinutes,
+              status: 'normal' as const,
+              checkInNote: checkInNote || r.checkInNote,
+              checkOutNote: checkOutNote || r.checkOutNote,
+              notes: mergedNotes,
+            }
+          : r
+      );
+      return {
+        ...prev,
+        records: updatedRecords,
+      };
+    });
   };
 
   // Handle Supervisor Approvals in Firestore
@@ -295,6 +384,7 @@ export default function App() {
             user={currentUser}
             attendanceLogs={attendanceRecords}
             onBack={() => setCurrentScreen('intern_checkin')}
+            onCheckOut={handleCheckOut}
             onNavigate={(tab) => {
               if (tab === 'checkin') setCurrentScreen('intern_checkin');
               if (tab === 'history') setCurrentScreen('intern_history');
@@ -336,6 +426,9 @@ export default function App() {
           <PayrollExportScreen
             user={currentUser}
             payrollRecords={payrollRecords}
+            attendanceRecords={attendanceRecords}
+            allUsers={allUsers}
+            finalizedCycles={finalizedCycles}
             onUpdateRecord={handleUpdatePayrollRecord}
             onAddNewRecord={handleAddNewPayrollRecord}
             onLogout={handleLogout}
@@ -348,7 +441,19 @@ export default function App() {
           <InternsManagementScreen
             user={currentUser}
             allUsers={allUsers}
+            attendanceRecords={attendanceRecords}
             onAssignSupervisor={handleAssignSupervisor}
+            onLogout={handleLogout}
+            onSwitchScreen={setCurrentScreen}
+          />
+        );
+
+      case 'attendance_logs':
+        return (
+          <AttendanceLogsScreen
+            user={currentUser}
+            attendanceRecords={attendanceRecords}
+            allUsers={allUsers}
             onLogout={handleLogout}
             onSwitchScreen={setCurrentScreen}
           />
@@ -414,6 +519,7 @@ export default function App() {
           review={detailModalTarget}
           onClose={() => setDetailModalTarget(null)}
           onApprove={handleApproveReview}
+          onConfirmCheckOut={handleSupervisorConfirmCheckOut}
         />
       )}
     </div>

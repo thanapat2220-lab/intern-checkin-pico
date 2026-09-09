@@ -11,10 +11,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
-  const [role, setRole] = useState<UserRole>('intern');
   const [department, setDepartment] = useState('');
-  const [team, setTeam] = useState('');
   const [bankName, setBankName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isInvalidCredError, setIsInvalidCredError] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -33,14 +32,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         if (password.length < 6) {
           throw new Error('Password must be at least 6 characters.');
         }
+        // Public registration strictly registers as 'intern'
         const newProfile = await registerNewUser(email, password, {
           name: fullName || email.split('@')[0],
-          role,
-          department,
-          team,
-          dailyRateTHB: role === 'intern' ? 400 : 0,
-          bankName,
-          accountNumber: '',
+          role: 'intern',
+          department: department || 'General',
+          team: 'Intern Team',
+          dailyRateTHB: 400,
+          bankName: bankName || 'Kasikorn Bank (KBANK)',
+          accountNumber: accountNumber || '',
         });
         onLoginSuccess(newProfile);
       } else {
@@ -102,7 +102,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               </h2>
               <p className="text-xs text-[#585f6a] mt-0.5">
                 {isRegisterMode
-                  ? 'Register as an intern, supervisor, or payroll admin'
+                  ? 'Intern Registration • Attendance & Direct Deposit'
                   : 'Enter your credentials to continue'}
               </p>
             </div>
@@ -144,13 +144,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           <form onSubmit={handleSubmit} className="flex flex-col gap-3.5">
             {isRegisterMode && (
               <>
+                {/* Full Name */}
                 <div className="flex flex-col gap-1">
                   <label className="text-[11px] font-bold text-[#041b3c] uppercase tracking-wider">
-                    Full Name
+                    Full Name <span className="text-[#ba1a1a]">*</span>
                   </label>
                   <input
                     className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-lg px-3 py-2 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
-                    placeholder="e.g. Thanapat S."
+                    placeholder="Enter your full name"
                     type="text"
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
@@ -158,63 +159,75 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                   />
                 </div>
 
+                {/* Department & Daily Rate */}
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="flex flex-col gap-1">
                     <label className="text-[11px] font-bold text-[#041b3c] uppercase tracking-wider">
-                      Account Role
-                    </label>
-                    <select
-                      value={role}
-                      onChange={(e) => setRole(e.target.value as UserRole)}
-                      className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-lg px-3 py-2 text-xs text-[#041b3c] focus:border-[#003d9b] outline-none"
-                    >
-                      <option value="intern">Intern</option>
-                      <option value="supervisor">Supervisor</option>
-                      <option value="payroll_admin">Payroll Admin</option>
-                    </select>
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[11px] font-bold text-[#041b3c] uppercase tracking-wider">
-                      Department
+                      Department <span className="text-[#ba1a1a]">*</span>
                     </label>
                     <input
                       className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-lg px-3 py-2 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
-                      placeholder="e.g. Engineering, Marketing, Operations..."
+                      placeholder="e.g. Engineering, Marketing..."
                       type="text"
                       value={department}
                       onChange={(e) => setDepartment(e.target.value)}
+                      required={isRegisterMode}
                     />
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-bold text-[#585f6a] uppercase tracking-wider">
+                      Daily Rate (THB)
+                    </label>
+                    <div className="w-full bg-[#e6edfa] border border-[#c3c6d6] rounded-lg px-3 py-2 text-xs text-[#003d9b] font-medium flex items-center justify-between cursor-not-allowed select-none">
+                      <span className="font-bold">400 THB/day</span>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-[#585f6a]">
+                        Fixed
+                      </span>
+                    </div>
                   </div>
                 </div>
 
-                {role === 'intern' && (
-                  <div className="grid grid-cols-2 gap-2.5 p-2.5 bg-[#f1f3ff] rounded-lg border border-[#c3c6d6]/60">
+                {/* Bank Information (Required for Payroll Reports) */}
+                <div className="p-3 bg-[#f1f3ff] rounded-xl border border-[#c3c6d6]/70 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-[#003d9b] uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[15px]">account_balance</span>
+                      <span>Payroll Direct Deposit Details</span>
+                    </span>
+                    <span className="text-[10px] text-[#585f6a]">Required</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] font-bold text-[#585f6a] uppercase">
-                        Daily Rate (THB)
-                      </label>
-                      <div className="w-full bg-[#e6edfa] border border-[#c3c6d6] rounded-md px-2.5 py-1.5 text-xs text-[#003d9b] font-medium flex items-center justify-between cursor-not-allowed select-none">
-                        <span>400 THB/day</span>
-                        <span className="text-[9px] font-bold uppercase tracking-wider text-[#585f6a]">
-                          Standard Rate
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-bold text-[#585f6a] uppercase">
-                        Bank Name
+                        Bank Name <span className="text-[#ba1a1a]">*</span>
                       </label>
                       <input
-                        className="w-full bg-white border border-[#c3c6d6] rounded-md px-2.5 py-1.5 text-xs text-[#041b3c] focus:border-[#003d9b] outline-none"
-                        placeholder="e.g. Kasikorn, SCB, Bangkok Bank..."
+                        className="w-full bg-white border border-[#c3c6d6] rounded-lg px-2.5 py-1.5 text-xs text-[#041b3c] focus:border-[#003d9b] outline-none"
+                        placeholder="e.g. Kasikorn Bank (KBANK)"
                         type="text"
                         value={bankName}
                         onChange={(e) => setBankName(e.target.value)}
+                        required={isRegisterMode}
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-[#585f6a] uppercase">
+                        Account Number <span className="text-[#ba1a1a]">*</span>
+                      </label>
+                      <input
+                        className="w-full bg-white border border-[#c3c6d6] rounded-lg px-2.5 py-1.5 text-xs text-[#041b3c] focus:border-[#003d9b] outline-none font-mono tracking-wide"
+                        placeholder="e.g. 702-2-91823-1"
+                        type="text"
+                        value={accountNumber}
+                        onChange={(e) => setAccountNumber(e.target.value)}
+                        required={isRegisterMode}
                       />
                     </div>
                   </div>
-                )}
+                </div>
               </>
             )}
 
@@ -262,6 +275,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                 />
               </div>
             </div>
+
+            {isRegisterMode && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-[#f1f3ff] rounded-lg border border-[#c3c6d6]/60 text-[11px] text-[#585f6a]">
+                <span className="material-symbols-outlined text-[16px] text-[#003d9b] shrink-0">lock</span>
+                <span>
+                  Public registration provisions verified Intern accounts only. Supervisor and Payroll Admin accounts are provisioned internally by management.
+                </span>
+              </div>
+            )}
 
             <button
               className="w-full bg-[#003d9b] hover:bg-[#0052cc] text-white font-semibold text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition-all mt-1 cursor-pointer shadow-sm disabled:opacity-50"

@@ -11,13 +11,15 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { AttendanceRecord, InternMonthlyReview, PayrollRecord, UserProfile, ApprovalLink } from '../types';
+import { AttendanceRecord, InternMonthlyReview, PayrollRecord, UserProfile, ApprovalLink, UserRole, FinalizedPayrollCycle } from '../types';
+import { formatMergedNotes } from '../utils/noteUtils';
 
 const ATTENDANCE_COLLECTION = 'attendance';
 const REVIEWS_COLLECTION = 'monthlyReviews';
 const PAYROLL_COLLECTION = 'payroll';
 const USERS_COLLECTION = 'users';
 const APPROVAL_LINKS_COLLECTION = 'approvalLinks';
+const FINALIZED_CYCLES_COLLECTION = 'finalizedPayrollCycles';
 
 const KNOWN_MOCK_ATTENDANCE_IDS = [
   'att-1',
@@ -93,8 +95,10 @@ export async function purgeMockDataFromFirestore(): Promise<void> {
         const data = d.data();
         if (
           KNOWN_MOCK_ATTENDANCE_IDS.includes(d.id) ||
+          d.id.startsWith('dummy-') ||
           data.internId === 'intern-01' ||
-          data.internId === 'intern-02'
+          data.internId === 'intern-02' ||
+          data.internId?.startsWith('dummy-')
         ) {
           await deleteDoc(d.ref);
         }
@@ -107,9 +111,11 @@ export async function purgeMockDataFromFirestore(): Promise<void> {
         const data = d.data();
         if (
           KNOWN_MOCK_REVIEW_IDS.includes(d.id) ||
+          d.id.startsWith('dummy-') ||
           MOCK_NAMES.includes(data.name) ||
           data.internId === 'intern-01' ||
-          data.internId === 'intern-02'
+          data.internId === 'intern-02' ||
+          data.internId?.startsWith('dummy-')
         ) {
           await deleteDoc(d.ref);
         }
@@ -120,7 +126,12 @@ export async function purgeMockDataFromFirestore(): Promise<void> {
       const paySnap = await getDocs(collection(db, PAYROLL_COLLECTION));
       for (const d of paySnap.docs) {
         const data = d.data();
-        if (KNOWN_MOCK_PAYROLL_IDS.includes(d.id) || MOCK_NAMES.includes(data.name)) {
+        if (
+          KNOWN_MOCK_PAYROLL_IDS.includes(d.id) ||
+          d.id.startsWith('dummy-') ||
+          MOCK_NAMES.includes(data.name) ||
+          data.internId?.startsWith('dummy-')
+        ) {
           await deleteDoc(d.ref);
         }
       }
@@ -132,6 +143,7 @@ export async function purgeMockDataFromFirestore(): Promise<void> {
         const data = d.data();
         if (
           KNOWN_MOCK_USER_IDS.includes(d.id) ||
+          d.id.startsWith('dummy-') ||
           (MOCK_NAMES.includes(data.name) && (d.id.startsWith('intern-') || d.id.startsWith('supervisor-') || d.id.startsWith('admin-')))
         ) {
           await deleteDoc(d.ref);
@@ -187,17 +199,19 @@ export async function saveUserProfile(user: UserProfile): Promise<void> {
 }
 
 /**
- * Create a lightweight supervisor record in Firestore without requiring Firebase Auth.
- * Used by Payroll Admins to immediately assign supervisors and generate magic links.
+ * Create a staff account (Supervisor or Payroll Admin) in Firestore without requiring initial passwords.
+ * Used by existing Payroll Admins inside the admin dashboard to securely provision accounts.
  */
-export async function createLightweightSupervisor(data: {
+export async function createStaffAccount(data: {
   name: string;
   email: string;
+  role: 'supervisor' | 'payroll_admin';
   department?: string;
   team?: string;
 }): Promise<UserProfile> {
   const cleanEmail = data.email.trim().toLowerCase();
   const cleanName = data.name.trim();
+  const targetRole: UserRole = data.role === 'payroll_admin' ? 'payroll_admin' : 'supervisor';
 
   // Check if a user with this email already exists
   const existingSnap = await getDocs(
@@ -205,12 +219,23 @@ export async function createLightweightSupervisor(data: {
   );
 
   if (!existingSnap.empty) {
-    const existing = existingSnap.docs[0].data() as UserProfile;
+    const existingDoc = existingSnap.docs[0];
+    const existing = existingDoc.data() as UserProfile;
+    if (existing.role !== targetRole) {
+      await updateDoc(existingDoc.ref, {
+        role: targetRole,
+        department: data.department?.trim() || existing.department,
+        team: data.team?.trim() || existing.team,
+        updatedAt: new Date().toISOString(),
+      });
+      return { ...existing, role: targetRole };
+    }
     return existing;
   }
 
-  // Generate a distinct supervisor document ID
-  const docId = `sup_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  // Generate a distinct staff document ID
+  const prefix = targetRole === 'payroll_admin' ? 'adm' : 'sup';
+  const docId = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const initials =
     cleanName
       .split(' ')
@@ -220,12 +245,12 @@ export async function createLightweightSupervisor(data: {
       .toUpperCase()
       .slice(0, 2) || (cleanEmail[0] || 'S').toUpperCase();
 
-  const supervisorProfile: UserProfile = {
+  const staffProfile: UserProfile = {
     id: docId,
     name: cleanName,
     email: cleanEmail,
-    role: 'supervisor',
-    department: data.department?.trim() || 'Operations',
+    role: targetRole,
+    department: data.department?.trim() || (targetRole === 'payroll_admin' ? 'Finance & Payroll' : 'Operations'),
     team: data.team?.trim() || 'General',
     initials,
     internshipPeriod: 'Full Time',
@@ -240,13 +265,26 @@ export async function createLightweightSupervisor(data: {
   };
 
   const userRef = doc(db, USERS_COLLECTION, docId);
-  await setDoc(userRef, supervisorProfile);
+  await setDoc(userRef, staffProfile);
 
-  return supervisorProfile;
+  return staffProfile;
 }
 
 /**
- * If a supervisor with an existing lightweight record registers with Firebase Auth,
+ * Create a lightweight supervisor record in Firestore without requiring Firebase Auth.
+ * Used by Payroll Admins to immediately assign supervisors and generate magic links.
+ */
+export async function createLightweightSupervisor(data: {
+  name: string;
+  email: string;
+  department?: string;
+  team?: string;
+}): Promise<UserProfile> {
+  return createStaffAccount({ ...data, role: 'supervisor' });
+}
+
+/**
+ * If a staff member (supervisor or admin) with an existing lightweight record registers with Firebase Auth,
  * link their profile to their new authenticated UID and migrate intern assignments seamlessly.
  */
 export async function linkLightweightSupervisorToAuth(
@@ -282,12 +320,31 @@ export async function linkLightweightSupervisorToAuth(
       .toUpperCase()
       .slice(0, 2) || (cleanEmail[0] || 'U').toUpperCase();
 
+  // Determine role: preserve existing admin/supervisor roles or normalize custom 'admin'
+  let role: UserRole = 'supervisor';
+  const rawExistingRole = existingProfile?.role as string | undefined;
+  const rawNewRole = newProfileData?.role as string | undefined;
+
+  if (
+    rawExistingRole === 'payroll_admin' ||
+    rawExistingRole === 'admin' ||
+    rawNewRole === 'payroll_admin' ||
+    rawNewRole === 'admin' ||
+    cleanEmail === 'thanapat2220@gmail.com'
+  ) {
+    role = 'payroll_admin';
+  } else if (rawExistingRole === 'supervisor' || rawNewRole === 'supervisor') {
+    role = 'supervisor';
+  } else if (existingProfile?.role) {
+    role = existingProfile.role;
+  }
+
   const mergedProfile: UserProfile = {
     id: firebaseUid,
     name,
     email: cleanEmail,
-    role: 'supervisor',
-    department: newProfileData?.department || existingProfile?.department || 'Operations',
+    role,
+    department: newProfileData?.department || existingProfile?.department || (role === 'payroll_admin' ? 'Finance & Payroll' : 'Operations'),
     team: newProfileData?.team || existingProfile?.team || 'General',
     avatarUrl: newProfileData?.avatarUrl || existingProfile?.avatarUrl,
     initials,
@@ -493,16 +550,90 @@ export async function updateAttendanceCheckOut(
   recordId: string,
   checkOutTime: string,
   totalDuration: string,
-  totalMinutes: number
+  totalMinutes: number,
+  notes?: string
 ): Promise<void> {
   try {
     const docRef = doc(db, ATTENDANCE_COLLECTION, recordId);
-    await updateDoc(docRef, {
+    const docSnap = await getDoc(docRef);
+
+    let checkInNote = '';
+    let existingNotes = '';
+    let locationNote = '';
+
+    if (docSnap.exists()) {
+      const existingData = docSnap.data() as AttendanceRecord;
+      checkInNote = existingData.checkInNote || '';
+      existingNotes = existingData.notes || '';
+      locationNote = existingData.locationNote || '';
+    }
+
+    // Determine the existing check-in note
+    const resolvedCheckInNote =
+      checkInNote ||
+      (locationNote &&
+      locationNote !== 'Bangkok HQ' &&
+      locationNote !== 'Outside Office / Traveling' &&
+      !locationNote.startsWith('Bangkok HQ -')
+        ? locationNote
+        : existingNotes && !existingNotes.startsWith('[In]')
+        ? existingNotes
+        : '');
+
+    const checkOutNote = notes !== undefined ? notes.trim() : '';
+
+    // Merge notes:
+    // Both exist: "[In] ... | [Out] ..."
+    // Single exists: note without prefix clutter
+    // Neither: ""
+    const mergedNotes = formatMergedNotes(resolvedCheckInNote, checkOutNote);
+
+    const updatePayload: Record<string, any> = {
       checkOutTime,
       totalDuration,
       totalMinutes,
+      status: 'normal',
       updatedAt: new Date().toISOString(),
-    });
+      notes: mergedNotes,
+    };
+    if (checkOutNote) {
+      updatePayload.checkOutNote = checkOutNote;
+    }
+    if (resolvedCheckInNote) {
+      updatePayload.checkInNote = resolvedCheckInNote;
+    }
+
+    await updateDoc(docRef, updatePayload);
+
+    // Also update record inside monthly review document if it exists
+    if (docSnap.exists()) {
+      const recordData = docSnap.data() as AttendanceRecord;
+      if (recordData.internId) {
+        const revRef = doc(db, REVIEWS_COLLECTION, `rev-${recordData.internId}`);
+        const revSnap = await getDoc(revRef);
+        if (revSnap.exists()) {
+          const revData = revSnap.data() as InternMonthlyReview;
+          const updatedRecords = (revData.records || []).map((r) =>
+            r.id === recordId
+              ? {
+                  ...r,
+                  checkOutTime,
+                  totalDuration,
+                  totalMinutes,
+                  status: 'normal' as const,
+                  checkInNote: resolvedCheckInNote || r.checkInNote,
+                  checkOutNote: checkOutNote || r.checkOutNote,
+                  notes: mergedNotes,
+                }
+              : r
+          );
+          await updateDoc(revRef, {
+            records: updatedRecords,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
   } catch (err) {
     console.error('Error checking out:', err);
     throw err;
@@ -736,5 +867,83 @@ export async function approveViaMagicLink(token: string, reviewId: string): Prom
     console.error('Error approving via magic link in Firestore:', err);
     throw err;
   }
+}
+
+/**
+ * Normalizes monthYear into a document id, e.g. "August 2026" -> "cycle_August_2026"
+ */
+export function getCycleDocId(monthYear: string): string {
+  return `cycle_${monthYear.replace(/[^a-zA-Z0-9]/g, '_')}`;
+}
+
+/**
+ * Real-time subscription to finalized payroll cycles
+ */
+export function subscribeToFinalizedPayrollCycles(
+  callback: (cycles: FinalizedPayrollCycle[]) => void
+): () => void {
+  try {
+    const q = collection(db, FINALIZED_CYCLES_COLLECTION);
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const cycles: FinalizedPayrollCycle[] = snapshot.docs.map((docSnap) => ({
+          ...docSnap.data(),
+          id: docSnap.id,
+        })) as FinalizedPayrollCycle[];
+        callback(cycles);
+      },
+      (error) => {
+        console.error('Error listening to finalized payroll cycles:', error);
+        callback([]);
+      }
+    );
+  } catch (err) {
+    console.error('Error setting up finalized payroll cycles listener:', err);
+    return () => {};
+  }
+}
+
+/**
+ * Record a finalized payroll cycle in Firestore.
+ * This is an internal audit log of which months have been finalized,
+ * by whom, and when, locking the month against accidental modifications.
+ */
+export async function finalizePayrollCycle(params: {
+  monthYear: string;
+  user: UserProfile;
+  totalInterns: number;
+  totalDaysWorked: number;
+  totalAmountTHB: number;
+  notes?: string;
+}): Promise<FinalizedPayrollCycle> {
+  const docId = getCycleDocId(params.monthYear);
+  const docRef = doc(db, FINALIZED_CYCLES_COLLECTION, docId);
+
+  const cycleData: FinalizedPayrollCycle = {
+    id: docId,
+    monthYear: params.monthYear,
+    finalizedAt: new Date().toISOString(),
+    finalizedByUid: params.user.id,
+    finalizedByName: params.user.name,
+    finalizedByEmail: params.user.email || '',
+    totalInterns: params.totalInterns,
+    totalDaysWorked: params.totalDaysWorked,
+    totalAmountTHB: params.totalAmountTHB,
+    status: 'finalized',
+    notes: params.notes || 'Finalized and locked for offline accounting processing',
+  };
+
+  await setDoc(docRef, cycleData);
+  return cycleData;
+}
+
+/**
+ * Unlock / Re-open a cycle if an administrator explicitly needs to make an adjustment.
+ */
+export async function unlockPayrollCycle(monthYear: string): Promise<void> {
+  const docId = getCycleDocId(monthYear);
+  const docRef = doc(db, FINALIZED_CYCLES_COLLECTION, docId);
+  await deleteDoc(docRef);
 }
 

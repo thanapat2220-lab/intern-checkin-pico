@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { InternMonthlyReview, UserProfile } from '../types';
 import { ASSET_IMAGES } from '../data/mockData';
+import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
+import { isMissingCheckout } from '../utils/attendanceLogUtils';
 
 interface SupervisorPortalScreenProps {
   user: UserProfile;
   reviews: InternMonthlyReview[];
   onApproveReview: (reviewId: string) => void;
   onApproveAll: () => void;
-  onOpenGpsReview?: (review: InternMonthlyReview) => void;
+  onOpenGpsReview?: (review) => void;
   onOpenDetailReview: (review: InternMonthlyReview) => void;
   onLogout: () => void;
   onSwitchScreen: (screen: any) => void;
@@ -22,7 +24,8 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
   onLogout,
   onSwitchScreen,
 }) => {
-  const [selectedMonth, setSelectedMonth] = useState('October 2023');
+  const [selectedMonth, setSelectedMonth] = useState(() => formatMonthYear());
+  const monthOptions = useMemo(() => getRecentMonthDropdownOptions(5, 1), []);
   const [activeNavTab, setActiveNavTab] = useState<'monthly_reviews' | 'overview' | 'stats' | 'logs' | 'archive'>('monthly_reviews');
   const [topNavTab, setTopNavTab] = useState<'reports' | 'dashboard' | 'interns' | 'settings'>('reports');
   const [showBulkModal, setShowBulkModal] = useState(false);
@@ -40,6 +43,9 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
 
   const pendingCount = visibleReviews.filter((r) => r.status === 'pending').length;
   const approvedCount = visibleReviews.filter((r) => r.status === 'approved').length;
+  const pendingWithMissingCount = visibleReviews.filter(
+    (r) => r.status === 'pending' && r.records.some(isMissingCheckout)
+  ).length;
 
   const handleApprove = (id: string, name: string) => {
     onApproveReview(id);
@@ -48,13 +54,25 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
   };
 
   const handleApproveAllClick = () => {
-    // Approve only reviews assigned to this supervisor
-    visibleReviews
-      .filter((r) => r.status === 'pending')
-      .forEach((r) => onApproveReview(r.id));
+    // Approve only reviews assigned to this supervisor that DO NOT have missing checkouts
+    const approvable = visibleReviews.filter(
+      (r) => r.status === 'pending' && !r.records.some(isMissingCheckout)
+    );
+    const blocked = visibleReviews.filter(
+      (r) => r.status === 'pending' && r.records.some(isMissingCheckout)
+    );
+
+    approvable.forEach((r) => onApproveReview(r.id));
     setShowBulkModal(false);
-    setToastMessage('All assigned intern monthly attendance records approved.');
-    setTimeout(() => setToastMessage(null), 3000);
+
+    if (blocked.length > 0) {
+      setToastMessage(
+        `Approved ${approvable.length} timecard(s). ${blocked.length} intern(s) have Missing Check-out and require manual review.`
+      );
+    } else {
+      setToastMessage('All assigned intern monthly attendance records approved.');
+    }
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
   return (
@@ -264,9 +282,11 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
                     onChange={(e) => setSelectedMonth(e.target.value)}
                     className="appearance-none bg-white border border-[#c3c6d6] rounded-md py-2 pl-3 pr-9 text-[13px] font-medium text-[#041b3c] focus:outline-none focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] cursor-pointer shadow-xs"
                   >
-                    <option>October 2023</option>
-                    <option>September 2023</option>
-                    <option>August 2023</option>
+                    {monthOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.value}
+                      </option>
+                    ))}
                   </select>
                   <span className="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-[#434654] pointer-events-none text-[18px]">
                     expand_more
@@ -331,12 +351,16 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
                 // Calculate office vs outside count if not preset
                 const officeCount = rev.officeDaysCount ?? (rev.records ? rev.records.filter((r) => r.locationType === 'office').length : 0);
                 const outsideCount = rev.outsideDaysCount ?? (rev.records ? rev.records.filter((r) => r.locationType === 'outside').length : 0);
+                const missingRecords = rev.records ? rev.records.filter(isMissingCheckout) : [];
+                const hasMissing = missingRecords.length > 0;
 
                 return (
                   <div
                     key={rev.id}
                     className={`bg-white border rounded-xl p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 transition-all ${
-                      isApproved
+                      hasMissing && isPending
+                        ? 'border-[#f87171] bg-[#fffdfc] shadow-xs'
+                        : isApproved
                         ? 'border-[#c3c6d6] bg-white opacity-90 hover:opacity-100'
                         : 'border-[#003d9b]/30 shadow-xs'
                     }`}
@@ -375,7 +399,7 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
                           </span>
                         </div>
 
-                        {/* Location Type Badges: Office vs Outside/Traveling */}
+                        {/* Location Type & Status Badges */}
                         <div className="flex items-center gap-2 mt-2 flex-wrap">
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-[#e0e8ff] text-[#003d9b] px-2.5 py-0.5 rounded-full border border-[#003d9b]/20">
                             <span className="material-symbols-outlined text-[12px]">corporate_fare</span>
@@ -388,15 +412,29 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
                               {outsideCount} Outside / Travel
                             </span>
                           )}
+
+                          {hasMissing && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-[#fee2e2] text-[#b91c1c] px-2.5 py-0.5 rounded-full border border-[#f87171]/50">
+                              <span className="material-symbols-outlined text-[12px]">warning</span>
+                              {missingRecords.length} Missing Check-out
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end border-t border-[#c3c6d6]/60 md:border-t-0 pt-3 md:pt-0">
                       {/* Status Pills */}
-                      {isPending && (
+                      {isPending && !hasMissing && (
                         <span className="px-3 py-1 bg-[#d7e2ff] text-[#003d9b] rounded-full text-[11px] font-semibold">
                           Pending Review
+                        </span>
+                      )}
+
+                      {isPending && hasMissing && (
+                        <span className="px-3 py-1 bg-[#fee2e2] text-[#b91c1c] border border-[#f87171]/40 rounded-full text-[11px] font-bold flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px]">rule</span>
+                          Action Needed
                         </span>
                       )}
 
@@ -417,13 +455,24 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
                         </button>
                         
                         {isPending && (
-                          <button
-                            onClick={() => handleApprove(rev.id, rev.name)}
-                            className="px-3.5 py-1.5 bg-[#003d9b] text-white rounded-md text-[12px] font-semibold hover:bg-[#0052cc] transition-colors flex items-center gap-1 cursor-pointer shadow-xs"
-                          >
-                            <span className="material-symbols-outlined text-[16px]">check</span>
-                            Approve
-                          </button>
+                          hasMissing ? (
+                            <button
+                              onClick={() => onOpenDetailReview(rev)}
+                              className="px-3.5 py-1.5 bg-[#ea580c] hover:bg-[#c2410c] text-white rounded-md text-[12px] font-bold transition-colors flex items-center gap-1 cursor-pointer shadow-xs"
+                              title="Manual confirmation required before approval"
+                            >
+                              <span className="material-symbols-outlined text-[16px]">edit_note</span>
+                              Manual Confirm
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleApprove(rev.id, rev.name)}
+                              className="px-3.5 py-1.5 bg-[#003d9b] text-white rounded-md text-[12px] font-semibold hover:bg-[#0052cc] transition-colors flex items-center gap-1 cursor-pointer shadow-xs"
+                            >
+                              <span className="material-symbols-outlined text-[16px]">check</span>
+                              Approve
+                            </button>
+                          )
                         )}
                       </div>
                     </div>
@@ -459,7 +508,19 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
               </p>
             </div>
 
-            <div className="flex flex-col gap-2 mt-6">
+            {pendingWithMissingCount > 0 && (
+              <div className="p-3 bg-[#fff7ed] border border-[#ea580c]/50 rounded-lg text-xs text-[#9a3412] flex items-start gap-2 mb-4">
+                <span className="material-symbols-outlined text-[18px] text-[#ea580c] shrink-0">warning</span>
+                <div>
+                  <span className="font-bold block">Safety Guardrail Active</span>
+                  <span>
+                    {pendingWithMissingCount} intern(s) have unclosed shifts with Missing Check-out. These records will NOT be auto-approved and will remain pending for manual review with notes.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2 mt-2">
               <button
                 onClick={handleApproveAllClick}
                 className="w-full py-2.5 bg-[#003d9b] text-white font-semibold text-xs rounded-md hover:bg-[#0052cc] transition-colors cursor-pointer shadow-xs"

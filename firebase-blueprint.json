@@ -96,6 +96,25 @@
         "usedAt": { "type": "string" }
       },
       "required": ["id", "internId", "internName", "month", "createdAt", "expiresAt", "used"]
+    },
+    "FinalizedPayrollCycle": {
+      "title": "FinalizedPayrollCycle",
+      "description": "Internal audit records of finalized payroll months preventing re-editing and marking completion for offline accounting handoff.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "monthYear": { "type": "string" },
+        "finalizedAt": { "type": "string" },
+        "finalizedByUid": { "type": "string" },
+        "finalizedByName": { "type": "string" },
+        "finalizedByEmail": { "type": "string" },
+        "totalInterns": { "type": "number" },
+        "totalDaysWorked": { "type": "number" },
+        "totalAmountTHB": { "type": "number" },
+        "status": { "type": "string", "enum": ["finalized"] },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "monthYear", "finalizedAt", "finalizedByUid", "finalizedByName", "totalInterns", "totalDaysWorked", "totalAmountTHB", "status"]
     }
   },
   "firestore": {
@@ -118,6 +137,10 @@
     "/approvalLinks/{token}": {
       "schema": { "$ref": "ApprovalLink" },
       "description": "Secure, single-use, time-limited magic links for supervisor approval."
+    },
+    "/finalizedPayrollCycles/{cycleId}": {
+      "schema": { "$ref": "FinalizedPayrollCycle" },
+      "description": "Permanent audit log of finalized payroll months."
     }
   }
 }

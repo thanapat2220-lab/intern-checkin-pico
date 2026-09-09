@@ -1,11 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { UserProfile, ScreenView } from '../types';
+import { UserProfile, ScreenView, AttendanceRecord } from '../types';
 import { ASSET_IMAGES } from '../data/mockData';
-import { createApprovalLink, createLightweightSupervisor } from '../services/dbService';
+import { createApprovalLink, createLightweightSupervisor, createStaffAccount } from '../services/dbService';
+import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
+import { InternAttendanceFormModal } from './InternAttendanceFormModal';
 
 interface InternsManagementScreenProps {
   user: UserProfile;
   allUsers: UserProfile[];
+  attendanceRecords?: AttendanceRecord[];
   onAssignSupervisor: (internId: string, supervisorId: string | null, supervisorName: string | null) => Promise<void>;
   onLogout: () => void;
   onSwitchScreen: (screen: ScreenView) => void;
@@ -14,6 +17,7 @@ interface InternsManagementScreenProps {
 export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = ({
   user,
   allUsers,
+  attendanceRecords = [],
   onAssignSupervisor,
   onLogout,
   onSwitchScreen,
@@ -24,10 +28,18 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [savingInternId, setSavingInternId] = useState<string | null>(null);
 
+  // Per-Intern Attendance Form Print Modal State
+  const [isPrintAttendanceModalOpen, setIsPrintAttendanceModalOpen] = useState<boolean>(false);
+  const [printSelectedInternId, setPrintSelectedInternId] = useState<string>('');
+
+  // Use only real Firestore attendance records
+  const effectiveAttendance = attendanceRecords;
+
   // Add Supervisor Modal State
   const [isAddSupervisorOpen, setIsAddSupervisorOpen] = useState<boolean>(false);
   const [newSupName, setNewSupName] = useState<string>('');
   const [newSupEmail, setNewSupEmail] = useState<string>('');
+  const [newStaffRole, setNewStaffRole] = useState<'supervisor' | 'payroll_admin'>('supervisor');
   const [newSupDept, setNewSupDept] = useState<string>('Engineering');
   const [newSupTeam, setNewSupTeam] = useState<string>('General');
   const [isCreatingSup, setIsCreatingSup] = useState<boolean>(false);
@@ -35,7 +47,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
 
   // Magic Link Generation Modal State
   const [linkModalIntern, setLinkModalIntern] = useState<UserProfile | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<string>('October 2023');
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => formatMonthYear());
   const [isGeneratingLink, setIsGeneratingLink] = useState<boolean>(false);
   const [generatedLinkData, setGeneratedLinkData] = useState<{
     token: string;
@@ -43,6 +55,9 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
     expiresAt: string;
   } | null>(null);
   const [isCopied, setIsCopied] = useState<boolean>(false);
+
+  // Dynamic review month options relative to current date
+  const reviewMonthOptions = useMemo(() => getRecentMonthDropdownOptions(5, 1), []);
 
   // Separate interns and supervisors
   const interns = useMemo(() => {
@@ -61,10 +76,11 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
     }, 4000);
   };
 
-  // Add Supervisor Handlers
+  // Add Staff / Supervisor Handlers
   const handleOpenAddSupervisor = () => {
     setNewSupName('');
     setNewSupEmail('');
+    setNewStaffRole('supervisor');
     setNewSupDept('Engineering');
     setNewSupTeam('General');
     setSupFormError(null);
@@ -79,7 +95,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
   const handleCreateSupervisor = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSupName.trim()) {
-      setSupFormError('Please enter the supervisor’s full name.');
+      setSupFormError('Please enter the full name.');
       return;
     }
     if (!newSupEmail.trim() || !newSupEmail.includes('@')) {
@@ -90,17 +106,19 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
     try {
       setIsCreatingSup(true);
       setSupFormError(null);
-      const created = await createLightweightSupervisor({
+      const created = await createStaffAccount({
         name: newSupName.trim(),
         email: newSupEmail.trim(),
+        role: newStaffRole,
         department: newSupDept.trim(),
         team: newSupTeam.trim(),
       });
-      showToast(`Supervisor "${created.name}" (${created.email}) added successfully.`);
+      const roleLabel = created.role === 'payroll_admin' ? 'Payroll Admin' : 'Supervisor';
+      showToast(`${roleLabel} "${created.name}" (${created.email}) provisioned successfully.`);
       handleCloseAddSupervisor();
     } catch (err: any) {
-      console.error('Failed to add supervisor:', err);
-      setSupFormError(err.message || 'Failed to add supervisor. Please try again.');
+      console.error('Failed to provision staff account:', err);
+      setSupFormError(err.message || 'Failed to provision staff account. Please try again.');
     } finally {
       setIsCreatingSup(false);
     }
@@ -109,7 +127,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
   // Magic Link Modal Handlers
   const handleOpenLinkModal = (intern: UserProfile) => {
     setLinkModalIntern(intern);
-    setSelectedMonth('October 2023');
+    setSelectedMonth(formatMonthYear());
     setGeneratedLinkData(null);
     setIsCopied(false);
   };
@@ -263,6 +281,13 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
 
             <div className="hidden md:flex items-center gap-2 pl-4 border-l border-[#c3c6d6]">
               <button
+                onClick={() => onSwitchScreen('attendance_logs')}
+                className="text-xs font-semibold px-3 py-1.5 rounded-md text-[#585f6a] hover:text-[#003d9b] hover:bg-[#f1f3ff] transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px]">list_alt</span>
+                <span>Attendance Log</span>
+              </button>
+              <button
                 onClick={() => onSwitchScreen('payroll_admin')}
                 className="text-xs font-semibold px-3 py-1.5 rounded-md text-[#585f6a] hover:text-[#003d9b] hover:bg-[#f1f3ff] transition-colors flex items-center gap-1.5 cursor-pointer"
               >
@@ -318,11 +343,25 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => {
+                setPrintSelectedInternId(interns[0]?.id || '');
+                setIsPrintAttendanceModalOpen(true);
+              }}
+              className="bg-emerald-700 hover:bg-emerald-800 text-white px-3.5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Print or Save Per-Intern Attendance Form (Pico Format)"
+            >
+              <span className="material-symbols-outlined text-[16px]">print</span>
+              <span>Print Attendance Form</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleOpenAddSupervisor}
               className="bg-white border border-[#003d9b] text-[#003d9b] hover:bg-[#f1f3ff] px-3.5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Securely provision Supervisor or Payroll Admin accounts"
             >
-              <span className="material-symbols-outlined text-[16px]">person_add</span>
-              <span>Add Supervisor</span>
+              <span className="material-symbols-outlined text-[16px]">admin_panel_settings</span>
+              <span>Provision Staff / Admin</span>
             </button>
 
             <button
@@ -485,7 +524,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                     <th className="py-3.5 px-4">Daily Rate</th>
                     <th className="py-3.5 px-4">Assignment Status</th>
                     <th className="py-3.5 px-6 min-w-[220px]">Assigned Supervisor</th>
-                    <th className="py-3.5 px-6 text-right min-w-[170px]">Magic Link Approval</th>
+                    <th className="py-3.5 px-6 text-right min-w-[260px]">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#c3c6d6]/60">
@@ -592,8 +631,8 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                           </div>
                         </td>
 
-                        {/* Magic Link Generator Action */}
-                        <td className="py-4 px-6 text-right">
+                        {/* Actions (Magic Link + Print Attendance Form) */}
+                        <td className="py-4 px-6 text-right whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() => handleOpenLinkModal(intern)}
@@ -602,6 +641,19 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                           >
                             <span className="material-symbols-outlined text-[15px]">send_time_extension</span>
                             <span>Generate Link</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPrintSelectedInternId(intern.id);
+                              setIsPrintAttendanceModalOpen(true);
+                            }}
+                            title={`Print Attendance Form for ${intern.name} (Pico Format)`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#10b981]/15 text-[#047857] hover:bg-[#10b981] hover:text-white transition-all shadow-xs cursor-pointer ml-1.5"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">print</span>
+                            <span>Print Form</span>
                           </button>
                         </td>
                       </tr>
@@ -622,12 +674,12 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
             <div className="p-5 border-b border-[#c3c6d6] flex items-center justify-between bg-[#fbfbfe]">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-[#003d9b]/10 text-[#003d9b] flex items-center justify-center shrink-0">
-                  <span className="material-symbols-outlined text-[20px]">person_add</span>
+                  <span className="material-symbols-outlined text-[20px]">admin_panel_settings</span>
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-[#041b3c]">Add New Supervisor</h3>
+                  <h3 className="text-base font-bold text-[#041b3c]">Provision Staff Account</h3>
                   <p className="text-[11px] text-[#585f6a]">
-                    Create a direct supervisor record for instant assignments & magic links
+                    Securely provision Supervisor or Payroll Admin accounts from inside the admin panel
                   </p>
                 </div>
               </div>
@@ -645,10 +697,10 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
               {/* Notice Banner */}
               <div className="bg-[#f1f3ff] border border-[#003d9b]/20 rounded-xl p-3.5 flex items-start gap-3">
                 <span className="material-symbols-outlined text-[#003d9b] text-[18px] shrink-0 mt-0.5">
-                  info
+                  security
                 </span>
                 <p className="text-[11px] text-[#041b3c] leading-relaxed">
-                  <strong>Passwordless & Immediate:</strong> No password or initial registration is required. This supervisor will instantly appear in all assignment dropdowns and can review intern timesheets directly via 1-click email magic links. If they register an account later using this email, their record will automatically link.
+                  <strong>Controlled Staff Provisioning:</strong> Public registration is strictly restricted to Intern accounts. Only existing Payroll Admins can provision supervisor or administrative access here. When the user logs in or registers via Firebase Auth with this email, their account will automatically link with this role.
                 </p>
               </div>
 
@@ -659,15 +711,69 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                 </div>
               )}
 
+              {/* Role Selection */}
+              <div>
+                <label className="block text-xs font-bold text-[#041b3c] mb-1.5">
+                  Account Role <span className="text-[#ba1a1a]">*</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setNewStaffRole('supervisor')}
+                    className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                      newStaffRole === 'supervisor'
+                        ? 'bg-[#e0e8ff] border-[#003d9b] ring-1 ring-[#003d9b]'
+                        : 'bg-white border-[#c3c6d6] hover:bg-[#f9f9ff]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-[#041b3c] flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">supervisor_account</span>
+                        Supervisor
+                      </span>
+                      {newStaffRole === 'supervisor' && (
+                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">check_circle</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-[#585f6a] leading-snug">
+                      Reviews & approves assigned intern timesheets and magic links.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setNewStaffRole('payroll_admin')}
+                    className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                      newStaffRole === 'payroll_admin'
+                        ? 'bg-[#e0e8ff] border-[#003d9b] ring-1 ring-[#003d9b]'
+                        : 'bg-white border-[#c3c6d6] hover:bg-[#f9f9ff]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-[#041b3c] flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">shield</span>
+                        Payroll Admin
+                      </span>
+                      {newStaffRole === 'payroll_admin' && (
+                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">check_circle</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-[#585f6a] leading-snug">
+                      Full administrative access, staff provisioning, and payroll disbursals.
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               {/* Full Name */}
               <div>
                 <label className="block text-xs font-bold text-[#041b3c] mb-1.5">
-                  Supervisor Full Name <span className="text-[#ba1a1a]">*</span>
+                  Full Name <span className="text-[#ba1a1a]">*</span>
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Dr. Alex Morgan"
+                  placeholder="Enter staff full name"
                   value={newSupName}
                   onChange={(e) => setNewSupName(e.target.value)}
                   className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
@@ -677,18 +783,18 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
               {/* Email Address */}
               <div>
                 <label className="block text-xs font-bold text-[#041b3c] mb-1.5">
-                  Supervisor Email Address <span className="text-[#ba1a1a]">*</span>
+                  Email Address <span className="text-[#ba1a1a]">*</span>
                 </label>
                 <input
                   type="email"
                   required
-                  placeholder="e.g. alex.morgan@company.com"
+                  placeholder="e.g. staff.member@company.com"
                   value={newSupEmail}
                   onChange={(e) => setNewSupEmail(e.target.value)}
                   className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
                 />
                 <p className="text-[10px] text-[#585f6a] mt-1">
-                  Magic link review invitations and reminder emails will be addressed to this inbox.
+                  Used for login linking, notification emails, and administrative alerts.
                 </p>
               </div>
 
@@ -700,7 +806,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. Engineering"
+                    placeholder={newStaffRole === 'payroll_admin' ? 'e.g. Finance & Payroll' : 'e.g. Engineering'}
                     value={newSupDept}
                     onChange={(e) => setNewSupDept(e.target.value)}
                     className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
@@ -739,12 +845,12 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   {isCreatingSup ? (
                     <>
                       <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>Creating...</span>
+                      <span>Provisioning...</span>
                     </>
                   ) : (
                     <>
                       <span className="material-symbols-outlined text-[16px]">check</span>
-                      <span>Save Supervisor</span>
+                      <span>Provision {newStaffRole === 'payroll_admin' ? 'Payroll Admin' : 'Supervisor'}</span>
                     </>
                   )}
                 </button>
@@ -822,10 +928,11 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   }}
                   className="w-full appearance-none bg-white border border-[#c3c6d6] rounded-lg py-2.5 px-3 text-xs font-semibold text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none cursor-pointer shadow-xs"
                 >
-                  <option value="October 2023">October 2023 (Current Cycle)</option>
-                  <option value="September 2023">September 2023</option>
-                  <option value="August 2023">August 2023</option>
-                  <option value="November 2023">November 2023</option>
+                  {reviewMonthOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -938,6 +1045,15 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
           </div>
         </div>
       )}
+      {/* Per-Intern Attendance Form Modal (Pico Format) */}
+      <InternAttendanceFormModal
+        isOpen={isPrintAttendanceModalOpen}
+        onClose={() => setIsPrintAttendanceModalOpen(false)}
+        interns={interns}
+        initialInternId={printSelectedInternId}
+        attendanceRecords={effectiveAttendance}
+        allUsers={allUsers}
+      />
     </div>
   );
 };

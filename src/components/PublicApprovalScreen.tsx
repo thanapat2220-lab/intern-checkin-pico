@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ApprovalLink, InternMonthlyReview } from '../types';
 import { getApprovalLinkByToken, getMonthlyReviewForMagicLink, approveViaMagicLink } from '../services/dbService';
+import { getMergedRecordNotes } from '../utils/noteUtils';
 
 interface PublicApprovalScreenProps {
   token?: string | null;
@@ -396,11 +397,12 @@ export const PublicApprovalScreen: React.FC<PublicApprovalScreenProps> = ({
                             )}
                           </div>
 
-                          {/* Location Note & GPS Coordinates */}
-                          <div className="text-[11px] text-[#585f6a] flex items-center gap-2 flex-wrap">
-                            {(rec.locationNote || rec.notes) && (
-                              <span className="font-medium text-[#041b3c]">
-                                {rec.locationNote || rec.notes}
+                          {/* Notes & GPS Coordinates */}
+                          <div className="text-[11px] text-[#585f6a] flex items-center gap-2 flex-wrap mt-0.5">
+                            {getMergedRecordNotes(rec) && (
+                              <span className="font-medium text-[#041b3c] bg-[#f1f3ff] px-2 py-0.5 rounded border border-[#c3c6d6]/60">
+                                <span className="text-[#0052cc] font-semibold mr-1">Notes:</span>
+                                {getMergedRecordNotes(rec)}
                               </span>
                             )}
                             {rec.coordinates && (

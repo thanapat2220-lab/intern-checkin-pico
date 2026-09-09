@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { AttendanceRecord, UserProfile } from '../types';
+import { getChronologicalMonthsList, formatMonthYear } from '../utils/dateUtils';
+import { isMissingCheckout, calculateDurationStr } from '../utils/attendanceLogUtils';
+import { getMergedRecordNotes } from '../utils/noteUtils';
 
 interface AttendanceHistoryScreenProps {
   user: UserProfile;
@@ -7,9 +10,8 @@ interface AttendanceHistoryScreenProps {
   onBack: () => void;
   onNavigate: (tab: 'checkin' | 'history' | 'profile') => void;
   approvalStatus?: 'pending' | 'approved';
+  onCheckOut?: (recordId: string, checkOutTime: string, note?: string) => void;
 }
-
-const MONTHS = ['August 2023', 'September 2023', 'October 2023', 'November 2023'];
 
 export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = ({
   user,
@@ -17,12 +19,26 @@ export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = (
   onBack,
   onNavigate,
   approvalStatus = 'pending',
+  onCheckOut,
 }) => {
-  const [selectedMonthIndex, setSelectedMonthIndex] = useState(2); // October 2023
+  // Generate chronological list of months (e.g. past 4 months + current month + 1 future month)
+  const months = useMemo(() => getChronologicalMonthsList(4, 1), []);
+  const currentMonthStr = formatMonthYear();
+  
+  // Default to the current month in the list
+  const initialIndex = useMemo(() => {
+    const idx = months.indexOf(currentMonthStr);
+    return idx !== -1 ? idx : Math.max(0, months.length - 2);
+  }, [months, currentMonthStr]);
+
+  const [selectedMonthIndex, setSelectedMonthIndex] = useState(initialIndex);
   const [visibleCount, setVisibleCount] = useState(5);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
+  const [resolvingLog, setResolvingLog] = useState<AttendanceRecord | null>(null);
+  const [resolveTime, setResolveTime] = useState('11:30 PM');
+  const [resolveNote, setResolveNote] = useState('');
 
-  const selectedMonth = MONTHS[selectedMonthIndex];
+  const selectedMonth = months[selectedMonthIndex] || currentMonthStr;
 
   const handlePrevMonth = () => {
     if (selectedMonthIndex > 0) {
@@ -31,7 +47,7 @@ export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = (
   };
 
   const handleNextMonth = () => {
-    if (selectedMonthIndex < MONTHS.length - 1) {
+    if (selectedMonthIndex < months.length - 1) {
       setSelectedMonthIndex(selectedMonthIndex + 1);
     }
   };
@@ -102,7 +118,7 @@ export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = (
           </h2>
           <button
             onClick={handleNextMonth}
-            disabled={selectedMonthIndex === MONTHS.length - 1}
+            disabled={selectedMonthIndex === months.length - 1}
             className="p-2 rounded-full hover:bg-[#f1f3ff] transition-colors active:scale-95 flex items-center justify-center text-[#434654] disabled:opacity-30 cursor-pointer"
             aria-label="Next Month"
           >
@@ -138,15 +154,22 @@ export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = (
           {displayedLogs.map((log) => {
             const isLate = log.status === 'late';
             const isOffice = log.locationType === 'office';
+            const isMissing = isMissingCheckout(log);
 
             return (
               <div
                 key={log.id}
-                className="bg-white border border-[#c3c6d6] rounded-xl p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 relative overflow-hidden transition-all hover:shadow-xs"
+                className={`bg-white border rounded-xl p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 relative overflow-hidden transition-all hover:shadow-xs ${
+                  isMissing ? 'border-2 border-[#f87171] bg-[#fffaf8]' : 'border-[#c3c6d6]'
+                }`}
               >
                 <div className="flex items-center gap-3.5 w-full md:w-auto">
                   {/* Month / Date Badge */}
-                  <div className="flex flex-col items-center justify-center p-2 rounded-lg min-w-[56px] bg-[#f1f3ff] text-[#003d9b] border border-[#c3c6d6]/50">
+                  <div className={`flex flex-col items-center justify-center p-2 rounded-lg min-w-[56px] border ${
+                    isMissing
+                      ? 'bg-[#fee2e2] text-[#b91c1c] border-[#f87171]/50'
+                      : 'bg-[#f1f3ff] text-[#003d9b] border-[#c3c6d6]/50'
+                  }`}>
                     <span className="text-[11px] font-bold tracking-wider uppercase">
                       {log.monthName}
                     </span>
@@ -170,59 +193,88 @@ export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = (
                         </span>
                       )}
 
-                      {isLate && (
-                        <span className="text-[10px] font-semibold bg-[#fff8e1] text-[#b45309] px-2 py-0.5 rounded-full border border-[#ffe082]">
-                          Late Arrival
+                      {/* Missing Check-out Status Badge */}
+                      {isMissing && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-[#fee2e2] text-[#b91c1c] px-2.5 py-0.5 rounded-full border border-[#f87171]/50">
+                          <span className="material-symbols-outlined text-[13px]">warning</span>
+                          Missing Check-out
                         </span>
                       )}
                     </div>
 
                     {/* Check-in to Check-out Time */}
                     <div className="flex items-center gap-2 mt-1">
-                      <span
-                        className={`text-[13px] font-medium ${
-                          isLate ? 'text-[#ba1a1a]' : 'text-[#041b3c]'
-                        }`}
-                      >
+                      <span className="text-[13px] font-medium text-[#041b3c]">
                         {log.checkInTime}
                       </span>
                       <span className="material-symbols-outlined text-[#737685] text-[15px]">
                         arrow_right_alt
                       </span>
-                      <span className="text-[13px] font-medium text-[#041b3c]">
+                      <span className={`text-[13px] font-medium ${isMissing ? 'text-[#b91c1c] font-bold' : 'text-[#041b3c]'}`}>
                         {log.checkOutTime || '--:--'}
                       </span>
                     </div>
 
-                    {/* Location Note / Provincial Site */}
-                    {(log.locationNote || log.notes) && (
-                      <p className="text-[12px] text-[#585f6a] mt-1 flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[14px] text-[#0052cc]">
-                          location_on
+                    {/* Notes (Unified Check-in / Check-out) */}
+                    {getMergedRecordNotes(log) && (
+                      <p className="text-[12px] text-[#585f6a] mt-1 flex items-center gap-1.5 flex-wrap">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0052cc] bg-[#f1f3ff] px-2 py-0.5 rounded border border-[#c3c6d6]/60">
+                          <span className="material-symbols-outlined text-[13px]">notes</span>
+                          <span>Notes:</span>
+                          <span className="font-normal text-[#041b3c]">{getMergedRecordNotes(log)}</span>
                         </span>
-                        {log.locationNote || log.notes}
                       </p>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between md:justify-end w-full md:w-auto gap-5 border-t border-[#c3c6d6]/60 md:border-none pt-2.5 md:pt-0">
-                  <div className="flex flex-col md:items-end">
-                    <span className="text-[10px] font-semibold text-[#585f6a] uppercase tracking-wider">
-                      Duration
-                    </span>
-                    <span className="text-[15px] font-bold text-[#003d9b]">
-                      {log.totalDuration}
-                    </span>
-                  </div>
+                <div className="flex items-center justify-between md:justify-end w-full md:w-auto gap-4 border-t border-[#c3c6d6]/60 md:border-none pt-2.5 md:pt-0">
+                  {isMissing ? (
+                    <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
+                      <div className="flex flex-col md:items-end">
+                        <span className="text-[10px] font-semibold text-[#b91c1c] uppercase tracking-wider">
+                          Status
+                        </span>
+                        <span className="text-[13px] font-bold text-[#b91c1c]">
+                          Missing Check-out
+                        </span>
+                      </div>
 
-                  <span
-                    className="material-symbols-outlined text-[#10B981] bg-[#10B981]/10 rounded-full p-1.5 filled"
-                    style={{ fontVariationSettings: "'FILL' 1" }}
-                    title="Recorded"
-                  >
-                    check_circle
-                  </span>
+                      {onCheckOut && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setResolvingLog(log);
+                            setResolveTime('11:30 PM');
+                            setResolveNote('');
+                          }}
+                          className="px-3 py-1.5 bg-[#ea580c] hover:bg-[#c2410c] text-white text-[11px] font-bold rounded-lg shadow-xs transition-all flex items-center gap-1 cursor-pointer active:scale-95"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">alarm_on</span>
+                          <span>Log Check-out</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-col md:items-end">
+                        <span className="text-[10px] font-semibold text-[#585f6a] uppercase tracking-wider">
+                          Duration
+                        </span>
+                        <span className="text-[15px] font-bold text-[#003d9b]">
+                          {log.totalDuration}
+                        </span>
+                      </div>
+
+                      <span
+                        className="material-symbols-outlined text-[#10B981] bg-[#10B981]/10 rounded-full p-1.5 filled"
+                        style={{ fontVariationSettings: "'FILL' 1" }}
+                        title="Recorded"
+                      >
+                        check_circle
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             );
@@ -336,7 +388,7 @@ export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = (
               <div className="p-3 bg-[#f1f3ff] rounded-lg border border-[#c3c6d6]/50">
                 <p className="font-semibold text-[#003d9b]">Monthly Cycle Submission</p>
                 <p className="text-xs text-[#585f6a] mt-0.5">
-                  Your October attendance sheet was forwarded to Supervisor Amanda Vance for payroll verification.
+                  Your {selectedMonth} attendance sheet was forwarded to supervisor for payroll verification.
                 </p>
               </div>
               <div className="p-3 bg-[#f9f9ff] rounded-lg border border-[#c3c6d6]/50">
@@ -352,6 +404,110 @@ export const AttendanceHistoryScreen: React.FC<AttendanceHistoryScreenProps> = (
             >
               Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Missed Check-out Resolution Modal */}
+      {resolvingLog && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-[#c3c6d6] flex flex-col gap-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#e8edff]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-full bg-[#fee2e2] text-[#b91c1c] flex items-center justify-center">
+                  <span className="material-symbols-outlined text-[20px]">history_toggle_off</span>
+                </div>
+                <div>
+                  <h3 className="text-[16px] font-bold text-[#041b3c]">Log Missed Check-out</h3>
+                  <p className="text-[11px] text-[#585f6a]">
+                    {resolvingLog.dayOfWeek}, {resolvingLog.monthName} {resolvingLog.date}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResolvingLog(null)}
+                className="text-[#737685] hover:text-[#041b3c] p-1"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            <div className="text-[12px] bg-[#fff7ed] text-[#7c2d12] p-3 rounded-xl border border-[#f97316]/30">
+              <span className="font-bold block text-[#9a3412]">Event & Exhibition Shift</span>
+              Check-in was recorded at <strong>{resolvingLog.checkInTime}</strong>. Please enter your departure time for supervisor review.
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#434654] uppercase tracking-wider mb-1.5">
+                Quick Presets
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {['09:00 PM', '10:30 PM', '11:45 PM', '01:00 AM', '02:00 AM', '03:00 AM'].map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setResolveTime(t)}
+                    className={`py-1.5 px-2 text-[11px] font-semibold rounded-lg border cursor-pointer ${
+                      resolveTime === t
+                        ? 'bg-[#003d9b] text-white border-[#003d9b]'
+                        : 'bg-[#f1f3ff] text-[#041b3c] border-[#c3c6d6]/60 hover:bg-[#e0e8ff]'
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#434654] uppercase tracking-wider mb-1">
+                Actual Departure Time
+              </label>
+              <input
+                type="text"
+                value={resolveTime}
+                onChange={(e) => setResolveTime(e.target.value)}
+                placeholder="e.g. 11:30 PM or 01:00 AM"
+                className="w-full px-3 py-2 text-[14px] font-bold bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl text-[#041b3c]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#434654] uppercase tracking-wider mb-1">
+                Note for Supervisor
+              </label>
+              <input
+                type="text"
+                value={resolveNote}
+                onChange={(e) => setResolveNote(e.target.value)}
+                placeholder="e.g. worked until 1 AM at event, forgot to check out"
+                className="w-full px-3 py-2 text-[12px] bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl text-[#041b3c]"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-[#e8edff]">
+              <button
+                type="button"
+                onClick={() => setResolvingLog(null)}
+                className="w-full py-2.5 px-4 rounded-xl border border-[#c3c6d6] text-xs font-semibold text-[#434654] hover:bg-[#f1f3ff]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onCheckOut && resolvingLog) {
+                    onCheckOut(resolvingLog.id, resolveTime, resolveNote);
+                  }
+                  setResolvingLog(null);
+                }}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-[#ea580c] hover:bg-[#c2410c] flex items-center justify-center gap-1.5"
+              >
+                <span className="material-symbols-outlined text-[16px]">save</span>
+                <span>Save Check-out</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
