@@ -18,7 +18,11 @@
         "bankName": { "type": "string" },
         "accountNumber": { "type": "string" },
         "supervisorId": { "type": "string" },
-        "supervisorName": { "type": "string" }
+        "supervisorName": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "archived"] },
+        "isArchived": { "type": "boolean" },
+        "archivedAt": { "type": "string" },
+        "archivedReason": { "type": "string" }
       },
       "required": ["id", "name", "email", "role"]
     },

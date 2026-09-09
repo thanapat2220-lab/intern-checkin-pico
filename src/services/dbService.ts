@@ -456,6 +456,116 @@ export async function assignSupervisorToIntern(
   }
 }
 
+/**
+ * Archive an intern from the active roster.
+ * Marks the intern's profile as inactive / internship ended without deleting historical data.
+ * Deactivates check-in access and removes them from active counts while preserving attendance & payroll audit records.
+ */
+export async function archiveIntern(internId: string, reason?: string): Promise<void> {
+  try {
+    const userRef = doc(db, USERS_COLLECTION, internId);
+    await updateDoc(userRef, {
+      status: 'archived',
+      isArchived: true,
+      archivedAt: new Date().toISOString(),
+      archivedReason: reason?.trim() || 'Internship Ended',
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Error archiving intern in Firestore:', err);
+    throw err;
+  }
+}
+
+/**
+ * Reactivate / Unarchive an intern back to active roster.
+ */
+export async function reactivateIntern(internId: string): Promise<void> {
+  try {
+    const userRef = doc(db, USERS_COLLECTION, internId);
+    await updateDoc(userRef, {
+      status: 'active',
+      isArchived: false,
+      archivedAt: null,
+      archivedReason: null,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Error reactivating intern in Firestore:', err);
+    throw err;
+  }
+}
+
+/**
+ * Permanently delete an intern record and purge all associated attendance, review, and payroll data.
+ * Used when an intern was added by mistake and has no real historical attendance.
+ */
+export async function deleteInternPermanently(internId: string): Promise<{
+  deletedAttendance: number;
+  deletedReviews: number;
+  deletedPayroll: number;
+}> {
+  try {
+    let deletedAttendance = 0;
+    let deletedReviews = 0;
+    let deletedPayroll = 0;
+
+    // 1. Delete all attendance records for this intern
+    const attSnap = await getDocs(
+      query(collection(db, ATTENDANCE_COLLECTION), where('internId', '==', internId))
+    );
+    for (const d of attSnap.docs) {
+      await deleteDoc(d.ref);
+      deletedAttendance++;
+    }
+
+    // 2. Delete monthly reviews
+    const revRef = doc(db, REVIEWS_COLLECTION, `rev-${internId}`);
+    const revSnap = await getDoc(revRef);
+    if (revSnap.exists()) {
+      await deleteDoc(revRef);
+      deletedReviews++;
+    }
+    const moreRevsSnap = await getDocs(
+      query(collection(db, REVIEWS_COLLECTION), where('internId', '==', internId))
+    );
+    for (const d of moreRevsSnap.docs) {
+      if (d.id !== `rev-${internId}`) {
+        await deleteDoc(d.ref);
+        deletedReviews++;
+      }
+    }
+
+    // 3. Delete payroll records for this intern
+    const paySnap = await getDocs(
+      query(collection(db, PAYROLL_COLLECTION), where('internId', '==', internId))
+    );
+    for (const d of paySnap.docs) {
+      await deleteDoc(d.ref);
+      deletedPayroll++;
+    }
+
+    // 4. Delete approval magic links for this intern
+    try {
+      const linkSnap = await getDocs(
+        query(collection(db, APPROVAL_LINKS_COLLECTION), where('internId', '==', internId))
+      );
+      for (const d of linkSnap.docs) {
+        await deleteDoc(d.ref);
+      }
+    } catch (_) {}
+
+    // 5. Delete the intern's user document
+    const userRef = doc(db, USERS_COLLECTION, internId);
+    await deleteDoc(userRef);
+
+    return { deletedAttendance, deletedReviews, deletedPayroll };
+  } catch (err) {
+    console.error('Error permanently deleting intern in Firestore:', err);
+    throw err;
+  }
+}
+
 // ---------------- ATTENDANCE RECORDS ---------------- //
 
 export function subscribeToAttendance(

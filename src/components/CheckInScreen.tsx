@@ -128,8 +128,9 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
   // 1. not_checked_in: todayRecord is null
   // 2. checked_in (active shift): todayRecord exists and has NO checkOutTime
   // 3. completed (checked out): todayRecord exists and has checkOutTime
-  const hasNotCheckedIn = !todayRecord;
-  const isCurrentlyCheckedIn = !!todayRecord && !todayRecord.checkOutTime;
+  const isArchived = user.status === 'archived' || Boolean(user.isArchived);
+  const hasNotCheckedIn = !todayRecord && !isArchived;
+  const isCurrentlyCheckedIn = !!todayRecord && !todayRecord.checkOutTime && !isArchived;
   const isCompletedToday = !!todayRecord && !!todayRecord.checkOutTime;
 
   // Handle resolving missed check-out
@@ -188,6 +189,11 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
 
   // Request Check-in or Check-out (opens confirmation dialog to prevent accidental taps)
   const handleRequestAction = () => {
+    if (isArchived) {
+      setToastMessage('Your internship account has ended. Check-in is deactivated.');
+      return;
+    }
+
     if (isCompletedToday) {
       return; // Shift already completed for today
     }
@@ -521,35 +527,57 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
           </div>
         )}
 
+        {/* Account Archived / Deactivated Banner */}
+        {isArchived && (
+          <div className="w-full bg-[#fef2f2] border border-[#ef4444]/40 rounded-xl p-4 shadow-sm text-center space-y-1.5">
+            <div className="inline-flex items-center gap-2 text-[#b91c1c] font-bold text-sm">
+              <span className="material-symbols-outlined text-[20px]">person_off</span>
+              <span>Account Inactive — Internship Ended</span>
+            </div>
+            <p className="text-xs text-[#7f1d1d] max-w-sm mx-auto leading-relaxed">
+              Your internship account has been archived. Check-in and check-out are deactivated.
+              All your historical attendance and payroll records remain safely preserved.
+            </p>
+            {user.archivedReason && (
+              <span className="inline-block text-[11px] bg-red-100 text-red-800 font-medium px-2.5 py-0.5 rounded-full">
+                Status: {user.archivedReason}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Check-in / Check-out Button Area */}
         <div className="relative w-full flex justify-center items-center py-3">
           {/* Decorative outer pulsing rings */}
-          {!isCompletedToday && (
+          {!isCompletedToday && !isArchived && (
             <>
               <div
                 className={`absolute inset-0 m-auto w-60 h-60 rounded-full border pulse-ring transition-colors ${
-                  isCurrentlyCheckedIn ? 'border-[#ea580c]/30' : 'border-[#0052cc]/20'
+                  isCurrentlyCheckedIn ? 'border-[#ea580c]/30' : 'border-[#003d9b]/20'
                 }`}
               />
               <div
                 className={`absolute inset-0 m-auto w-52 h-52 rounded-full border transition-colors ${
-                  isCurrentlyCheckedIn ? 'border-[#ea580c]/40' : 'border-[#0052cc]/40'
+                  isCurrentlyCheckedIn ? 'border-[#ea580c]/40' : 'border-[#003d9b]/40'
                 }`}
               />
             </>
           )}
 
           {/* Main Button with Dynamic States:
-              1. Not Checked in: Blue 'Check In' button (or Orange 'Log Missed Out' if past shift unclosed)
-              2. Checked in: Orange/Red 'Check Out' button
-              3. Completed: Disabled Green 'Completed for Today' button
+              1. Archived / Deactivated: Gray disabled button
+              2. Not Checked in: Blue 'Check In' button (or Orange 'Log Missed Out' if past shift unclosed)
+              3. Checked in: Orange/Red 'Check Out' button
+              4. Completed: Disabled Green 'Completed for Today' button
           */}
           <button
             onClick={handleRequestAction}
-            disabled={isCompletedToday}
+            disabled={isCompletedToday || isArchived}
             id="checkInBtn"
             className={`checkin-button relative z-10 w-44 h-44 rounded-full text-white flex flex-col items-center justify-center gap-1.5 group transition-all duration-300 ${
-              isCompletedToday
+              isArchived
+                ? 'bg-[#9ca3af] shadow-none opacity-80 cursor-not-allowed'
+                : isCompletedToday
                 ? 'bg-[#10b981] shadow-[0_8px_28px_rgba(16,185,129,0.25)] opacity-95 cursor-default'
                 : isCurrentlyCheckedIn
                 ? 'bg-[#ea580c] shadow-[0_8px_32px_rgba(234,88,12,0.38)] hover:bg-[#c2410c] active:scale-95 cursor-pointer'
@@ -562,11 +590,13 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
             
             <span
               className={`material-symbols-outlined text-white transition-transform ${
-                !isCompletedToday ? 'group-hover:scale-110' : ''
+                !isCompletedToday && !isArchived ? 'group-hover:scale-110' : ''
               } duration-200`}
               style={{ fontSize: '42px' }}
             >
-              {isCompletedToday
+              {isArchived
+                ? 'block'
+                : isCompletedToday
                 ? 'verified'
                 : isCurrentlyCheckedIn
                 ? 'logout'
@@ -576,7 +606,9 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
             </span>
 
             <span className="text-[18px] font-bold tracking-wide text-center leading-tight">
-              {isCompletedToday
+              {isArchived
+                ? 'Deactivated'
+                : isCompletedToday
                 ? 'Completed'
                 : isCurrentlyCheckedIn
                 ? 'Check Out'
@@ -586,7 +618,9 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
             </span>
 
             <span className="text-[11px] opacity-90 font-normal px-2 text-center leading-tight">
-              {isCompletedToday
+              {isArchived
+                ? 'Internship Ended'
+                : isCompletedToday
                 ? 'Logged for today'
                 : isCurrentlyCheckedIn
                 ? 'Tap to end shift'

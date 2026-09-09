@@ -52,6 +52,8 @@ export interface RawAttendanceLogEntry {
   monthYear: string;
 }
 
+export type InternAccountStatus = 'active' | 'archived';
+
 export interface UserProfile {
   id: string;
   name: string;
@@ -68,6 +70,10 @@ export interface UserProfile {
   supervisorId?: string | null;
   supervisorName?: string | null;
   isLightweight?: boolean;
+  status?: InternAccountStatus;
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  archivedReason?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }

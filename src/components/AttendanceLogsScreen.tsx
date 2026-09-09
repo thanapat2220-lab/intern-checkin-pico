@@ -54,6 +54,8 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [showIrregularOnly, setShowIrregularOnly] = useState<boolean>(false);
+  // Archived interns filter toggle (hidden by default)
+  const [showArchived, setShowArchived] = useState<boolean>(false);
   // Column display options: Intern ID is hidden by default to keep main view uncluttered
   const [showInternId, setShowInternId] = useState<boolean>(false);
 
@@ -74,10 +76,12 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
 
   // Unique list of interns and departments for filter dropdowns & quick selector
   const internsList = useMemo(() => {
-    const map = new Map<string, { id: string; name: string; department: string; initials: string; team?: string; avatarUrl?: string }>();
+    const map = new Map<string, { id: string; name: string; department: string; initials: string; team?: string; avatarUrl?: string; isArchived: boolean }>();
     effectiveUsers
       .filter((u) => u.role === 'intern')
-      .forEach((u) =>
+      .forEach((u) => {
+        const isArchived = Boolean(u.isArchived || u.status === 'archived');
+        if (!showArchived && isArchived) return;
         map.set(u.id, {
           id: u.id,
           name: u.name,
@@ -85,10 +89,14 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
           initials: u.initials || u.name.slice(0, 2).toUpperCase(),
           team: u.team,
           avatarUrl: u.avatarUrl,
-        })
-      );
+          isArchived,
+        });
+      });
     rawEntries.forEach((e) => {
       if (!map.has(e.internId)) {
+        const internUser = effectiveUsers.find((u) => u.id === e.internId);
+        const isArchived = Boolean(internUser?.isArchived || internUser?.status === 'archived');
+        if (!showArchived && isArchived) return;
         map.set(e.internId, {
           id: e.internId,
           name: e.internName,
@@ -96,11 +104,12 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
           initials: e.internInitials,
           team: e.internTeam,
           avatarUrl: e.internAvatarUrl,
+          isArchived,
         });
       }
     });
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [effectiveUsers, rawEntries]);
+  }, [effectiveUsers, rawEntries, showArchived]);
 
   const departmentsList = useMemo(() => {
     const set = new Set<string>();
@@ -113,28 +122,41 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
     return Array.from(set).sort();
   }, [effectiveUsers, rawEntries]);
 
+  // Filtered raw entries pool respecting showArchived toggle for KPIs
+  const effectiveRawEntries = useMemo(() => {
+    if (showArchived) return rawEntries;
+    return rawEntries.filter((e) => {
+      const internUser = effectiveUsers.find((u) => u.id === e.internId);
+      return !internUser || (!internUser.isArchived && internUser.status !== 'archived');
+    });
+  }, [rawEntries, showArchived, effectiveUsers]);
+
   // Overall Statistics Summary (Combined)
   const stats = useMemo(() => {
-    const totalDays = rawEntries.length;
-    const completed = rawEntries.filter((e) => e.status === 'completed').length;
-    const active = rawEntries.filter((e) => e.status === 'active').length;
-    const missingCheckout = rawEntries.filter((e) => e.status === 'missing_checkout').length;
-    const irregulars = rawEntries.filter((e) => e.isIrregular).length;
-    const lateCount = rawEntries.filter((e) => e.isLate).length;
-    const officeCount = rawEntries.filter((e) => e.locationType === 'office').length;
-    const outsideCount = rawEntries.filter((e) => e.locationType === 'outside').length;
+    const totalDays = effectiveRawEntries.length;
+    const completed = effectiveRawEntries.filter((e) => e.status === 'completed').length;
+    const active = effectiveRawEntries.filter((e) => e.status === 'active').length;
+    const missingCheckout = effectiveRawEntries.filter((e) => e.status === 'missing_checkout').length;
+    const irregulars = effectiveRawEntries.filter((e) => e.isIrregular).length;
+    const lateCount = effectiveRawEntries.filter((e) => e.isLate).length;
+    const officeCount = effectiveRawEntries.filter((e) => e.locationType === 'office').length;
+    const outsideCount = effectiveRawEntries.filter((e) => e.locationType === 'outside').length;
 
     return { totalDays, completed, active, missingCheckout, irregulars, lateCount, officeCount, outsideCount };
-  }, [rawEntries]);
+  }, [effectiveRawEntries]);
 
   // Currently Selected Intern Profile for "Per-Intern" View
   const selectedInternProfile = useMemo(() => {
-    return (
-      effectiveUsers.find((u) => u.id === perInternSelectedId) ||
-      effectiveUsers.find((u) => u.role === 'intern') ||
-      null
+    if (perInternSelectedId) {
+      const found = effectiveUsers.find((u) => u.id === perInternSelectedId);
+      if (found) return found;
+    }
+    // Default to first active intern
+    const activeIntern = effectiveUsers.find(
+      (u) => u.role === 'intern' && (showArchived || (!u.isArchived && u.status !== 'archived'))
     );
-  }, [effectiveUsers, perInternSelectedId]);
+    return activeIntern || effectiveUsers.find((u) => u.role === 'intern') || null;
+  }, [effectiveUsers, perInternSelectedId, showArchived]);
 
   // Dedicated entries for the selected individual intern
   const perInternEntries = useMemo(() => {
@@ -224,6 +246,7 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
     setStartDate('');
     setEndDate('');
     setShowIrregularOnly(false);
+    setShowArchived(false);
     setCurrentPage(1);
   };
 
@@ -234,6 +257,14 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
 
     return baseList
       .filter((entry) => {
+        // 0. Archived intern check (hidden unless showArchived is true)
+        if (!showArchived) {
+          const internUser = effectiveUsers.find((u) => u.id === entry.internId);
+          if (internUser && (internUser.isArchived || internUser.status === 'archived')) {
+            return false;
+          }
+        }
+
         // 1. Intern filter (only active in 'all_combined' view)
         if (viewMode === 'all_combined' && selectedInternId !== 'all' && entry.internId !== selectedInternId) {
           return false;
@@ -536,7 +567,14 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
                           {intern.initials}
                         </div>
                         <div className="leading-tight">
-                          <div className="text-xs font-bold whitespace-nowrap">{intern.name}</div>
+                          <div className="text-xs font-bold whitespace-nowrap flex items-center gap-1.5">
+                            <span>{intern.name}</span>
+                            {intern.isArchived && (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#fee2e2] text-[#991b1b] border border-[#fca5a5]">
+                                Inactive
+                              </span>
+                            )}
+                          </div>
                           <div
                             className={`text-[10px] whitespace-nowrap ${
                               isSelected ? 'text-[#b2c5ff]' : 'text-[#585f6a]'
@@ -973,6 +1011,28 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
                 />
                 <span className="material-symbols-outlined text-[15px]">badge</span>
                 <span>Show Intern ID</span>
+              </label>
+
+              {/* Show Archived Toggle */}
+              <label
+                className={`flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-md border cursor-pointer select-none transition-all ${
+                  showArchived
+                    ? 'bg-[#fff7ed] text-[#c2410c] border-[#fed7aa] ring-1 ring-[#fed7aa]'
+                    : 'bg-[#f8fafc] text-[#64748b] border-[#cbd5e1] hover:bg-[#f1f5f9]'
+                }`}
+                title="Include attendance logs from archived / inactive interns"
+              >
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => {
+                    setShowArchived(e.target.checked);
+                    setCurrentPage(1);
+                  }}
+                  className="w-3.5 h-3.5 accent-[#c2410c] rounded border-[#c3c6d6]"
+                />
+                <span className="material-symbols-outlined text-[15px]">archive</span>
+                <span>Show Archived</span>
               </label>
 
               {/* Reset All Filters */}

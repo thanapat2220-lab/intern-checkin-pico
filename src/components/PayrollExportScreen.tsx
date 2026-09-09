@@ -71,6 +71,7 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
   const [selectedDepartment, setSelectedDepartment] = useState<string>('All Departments');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('All Statuses');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [showArchived, setShowArchived] = useState<boolean>(false);
   const [activeSideTab, setActiveSideTab] = useState<'overview' | 'status' | 'bank' | 'tax' | 'audit'>('overview');
   const [topNavTab, setTopNavTab] = useState<'payroll' | 'dashboard' | 'interns' | 'reports'>('payroll');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -115,7 +116,12 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
     const storedInternIds = new Set(storedMonthRecords.map((r) => r.internId));
 
     // 2. Real registered interns in allUsers who don't have a stored payroll doc yet for this month:
-    const registeredInterns = allUsers.filter((u) => u.role === 'intern');
+    const registeredInterns = allUsers.filter((u) => {
+      if (u.role !== 'intern') return false;
+      const isArchived = Boolean(u.isArchived || u.status === 'archived');
+      if (!showArchived && isArchived) return false;
+      return true;
+    });
     const derivedFromAttendance: PayrollRecord[] = [];
 
     for (const intern of registeredInterns) {
@@ -146,7 +152,7 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
     }
 
     return [...storedMonthRecords, ...derivedFromAttendance];
-  }, [payrollRecords, selectedMonth, allUsers, activeAttendanceLogs]);
+  }, [payrollRecords, selectedMonth, allUsers, activeAttendanceLogs, showArchived]);
 
   // Department options derived from data
   const departmentOptions = useMemo(() => {
@@ -158,6 +164,14 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
   // Filtered records
   const filteredRecords = useMemo(() => {
     return activeRecords.filter((rec) => {
+      // Archived intern check
+      if (!showArchived) {
+        const internUser = allUsers.find((u) => u.id === rec.internId);
+        if (internUser && (internUser.isArchived || internUser.status === 'archived')) {
+          return false;
+        }
+      }
+
       const matchesDept =
         selectedDepartment === 'All Departments' || rec.department === selectedDepartment;
       const matchesStatus =
@@ -888,6 +902,25 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
                   <span className="material-symbols-outlined text-[15px]">badge</span>
                   <span>Show Intern ID</span>
                 </label>
+
+                {/* Show Archived Toggle */}
+                <label
+                  className={`flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg border cursor-pointer select-none transition-all ${
+                    showArchived
+                      ? 'bg-[#fff7ed] text-[#c2410c] border-[#fed7aa] ring-1 ring-[#fed7aa]'
+                      : 'bg-[#f9f9ff] text-[#64748b] border-[#c3c6d6] hover:bg-[#f1f3ff]'
+                  }`}
+                  title="Include archived / inactive interns in payroll calculations and summary"
+                >
+                  <input
+                    type="checkbox"
+                    checked={showArchived}
+                    onChange={(e) => setShowArchived(e.target.checked)}
+                    className="accent-[#c2410c] rounded w-3.5 h-3.5"
+                  />
+                  <span className="material-symbols-outlined text-[15px]">archive</span>
+                  <span>Show Archived</span>
+                </label>
               </div>
 
               {/* Right Side Action Buttons */}
@@ -997,6 +1030,8 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
                       filteredRecords.map((row, idx) => {
                         const isEven = idx % 2 === 1;
                         const isApproved = row.status === 'Approved';
+                        const internUser = allUsers.find((u) => u.id === row.internId);
+                        const isArchived = Boolean(internUser?.isArchived || internUser?.status === 'archived');
                         const initials = row.name
                           .split(' ')
                           .map((w) => w[0])
@@ -1013,13 +1048,24 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
                             {/* Name */}
                             <td className="p-3.5 whitespace-nowrap">
                               <div className="flex items-center gap-2.5">
-                                <div className="w-8 h-8 rounded-full bg-[#003d9b] text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs">
+                                <div
+                                  className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs ${
+                                    isArchived ? 'bg-[#64748b] text-white' : 'bg-[#003d9b] text-white'
+                                  }`}
+                                >
                                   {initials}
                                 </div>
                                 <div>
-                                  <span className="font-bold text-[#041b3c] block leading-tight">
-                                    {row.name}
-                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-[#041b3c] block leading-tight">
+                                      {row.name}
+                                    </span>
+                                    {isArchived && (
+                                      <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#fee2e2] text-[#991b1b] border border-[#fca5a5]">
+                                        Inactive
+                                      </span>
+                                    )}
+                                  </div>
                                   <span className="text-[11px] text-[#585f6a]">
                                     {row.supervisorName ? `Supv: ${row.supervisorName}` : 'Intern'}
                                   </span>

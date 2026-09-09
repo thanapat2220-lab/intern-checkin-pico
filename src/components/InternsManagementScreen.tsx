@@ -1,7 +1,14 @@
 import React, { useState, useMemo } from 'react';
 import { UserProfile, ScreenView, AttendanceRecord } from '../types';
 import { ASSET_IMAGES } from '../data/mockData';
-import { createApprovalLink, createLightweightSupervisor, createStaffAccount } from '../services/dbService';
+import {
+  createApprovalLink,
+  createLightweightSupervisor,
+  createStaffAccount,
+  archiveIntern,
+  reactivateIntern,
+  deleteInternPermanently,
+} from '../services/dbService';
 import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
 import { InternAttendanceFormModal } from './InternAttendanceFormModal';
 
@@ -23,10 +30,21 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
   onSwitchScreen,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'unassigned' | 'assigned'>('all');
+  const [statusFilter, setStatusFilter] = useState<'active' | 'unassigned' | 'assigned' | 'archived' | 'all'>('active');
+  const [showArchived, setShowArchived] = useState<boolean>(false);
   const [supervisorFilter, setSupervisorFilter] = useState<string>('all');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [savingInternId, setSavingInternId] = useState<string | null>(null);
+
+  // Archive Modal State
+  const [archiveModalIntern, setArchiveModalIntern] = useState<UserProfile | null>(null);
+  const [archiveReason, setArchiveReason] = useState<string>('Internship Period Completed');
+  const [archiveCustomReason, setArchiveCustomReason] = useState<string>('');
+  const [isArchiving, setIsArchiving] = useState<boolean>(false);
+
+  // Delete Permanently Modal State
+  const [deleteModalIntern, setDeleteModalIntern] = useState<UserProfile | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
   // Per-Intern Attendance Form Print Modal State
   const [isPrintAttendanceModalOpen, setIsPrintAttendanceModalOpen] = useState<boolean>(false);
@@ -59,10 +77,20 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
   // Dynamic review month options relative to current date
   const reviewMonthOptions = useMemo(() => getRecentMonthDropdownOptions(5, 1), []);
 
-  // Separate interns and supervisors
-  const interns = useMemo(() => {
+  // Separate interns into active, archived, and total
+  const allInterns = useMemo(() => {
     return allUsers.filter((u) => u.role === 'intern');
   }, [allUsers]);
+
+  const activeInterns = useMemo(() => {
+    return allInterns.filter((u) => !u.isArchived && u.status !== 'archived');
+  }, [allInterns]);
+
+  const archivedInterns = useMemo(() => {
+    return allInterns.filter((u) => u.isArchived || u.status === 'archived');
+  }, [allInterns]);
+
+  const interns = allInterns;
 
   const supervisors = useMemo(() => {
     return allUsers.filter((u) => u.role === 'supervisor' || u.role === 'payroll_admin');
@@ -206,23 +234,38 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
 
   // Filtered interns
   const filteredInterns = useMemo(() => {
-    return interns.filter((intern) => {
-      // Search matching
-      const matchesSearch =
-        intern.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        intern.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        intern.department.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (intern.team && intern.team.toLowerCase().includes(searchQuery.toLowerCase()));
-
-      if (!matchesSearch) return false;
+    return allInterns.filter((intern) => {
+      const isArchived = Boolean(intern.isArchived || intern.status === 'archived');
 
       // Status filter
-      const isAssigned = Boolean(intern.supervisorId);
-      if (statusFilter === 'unassigned' && isAssigned) return false;
-      if (statusFilter === 'assigned' && !isAssigned) return false;
+      if (statusFilter === 'active') {
+        if (isArchived && !showArchived) return false;
+      } else if (statusFilter === 'archived') {
+        if (!isArchived) return false;
+      } else if (statusFilter === 'unassigned') {
+        if (isArchived && !showArchived) return false;
+        if (intern.supervisorId) return false;
+      } else if (statusFilter === 'assigned') {
+        if (isArchived && !showArchived) return false;
+        if (!intern.supervisorId) return false;
+      } else if (statusFilter === 'all') {
+        if (isArchived && !showArchived) return false;
+      }
+
+      // Search matching
+      const q = searchQuery.toLowerCase().trim();
+      if (q) {
+        const matchesSearch =
+          intern.name.toLowerCase().includes(q) ||
+          intern.email.toLowerCase().includes(q) ||
+          intern.department.toLowerCase().includes(q) ||
+          (intern.team && intern.team.toLowerCase().includes(q));
+        if (!matchesSearch) return false;
+      }
 
       // Supervisor filter
       if (supervisorFilter !== 'all') {
+        const isAssigned = Boolean(intern.supervisorId);
         if (supervisorFilter === 'unassigned') {
           if (isAssigned) return false;
         } else if (intern.supervisorId !== supervisorFilter) {
@@ -232,12 +275,76 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
 
       return true;
     });
-  }, [interns, searchQuery, statusFilter, supervisorFilter]);
+  }, [allInterns, searchQuery, statusFilter, supervisorFilter, showArchived]);
 
-  // Counts
-  const totalCount = interns.length;
-  const unassignedCount = interns.filter((i) => !i.supervisorId).length;
-  const assignedCount = totalCount - unassignedCount;
+  // Counts (Active vs Inactive separation)
+  const totalActiveCount = activeInterns.length;
+  const unassignedCount = activeInterns.filter((i) => !i.supervisorId).length;
+  const assignedCount = totalActiveCount - unassignedCount;
+  const archivedCount = archivedInterns.length;
+  const totalInternsCount = allInterns.length;
+
+  // Handle Archive Intern
+  const handleOpenArchiveModal = (intern: UserProfile) => {
+    setArchiveModalIntern(intern);
+    setArchiveReason('Internship Period Completed');
+    setArchiveCustomReason('');
+  };
+
+  const handleConfirmArchive = async () => {
+    if (!archiveModalIntern) return;
+    try {
+      setIsArchiving(true);
+      const finalReason =
+        archiveReason === 'Other' && archiveCustomReason.trim()
+          ? archiveCustomReason.trim()
+          : archiveReason;
+      await archiveIntern(archiveModalIntern.id, finalReason);
+      showToast(`Intern "${archiveModalIntern.name}" marked as Inactive / Archived.`);
+      setArchiveModalIntern(null);
+    } catch (err) {
+      console.error('Failed to archive intern:', err);
+      showToast('Error archiving intern. Please try again.');
+    } finally {
+      setIsArchiving(false);
+    }
+  };
+
+  // Handle Reactivate Intern
+  const handleReactivate = async (intern: UserProfile) => {
+    try {
+      setSavingInternId(intern.id);
+      await reactivateIntern(intern.id);
+      showToast(`Intern "${intern.name}" restored to Active roster.`);
+    } catch (err) {
+      console.error('Failed to reactivate intern:', err);
+      showToast('Error reactivating intern. Please try again.');
+    } finally {
+      setSavingInternId(null);
+    }
+  };
+
+  // Handle Permanently Delete Intern
+  const handleOpenDeleteModal = (intern: UserProfile) => {
+    setDeleteModalIntern(intern);
+  };
+
+  const handleConfirmDeletePermanently = async () => {
+    if (!deleteModalIntern) return;
+    try {
+      setIsDeleting(true);
+      const res = await deleteInternPermanently(deleteModalIntern.id);
+      showToast(
+        `Intern "${deleteModalIntern.name}" permanently deleted (${res.deletedAttendance} attendance records purged).`
+      );
+      setDeleteModalIntern(null);
+    } catch (err) {
+      console.error('Failed to permanently delete intern:', err);
+      showToast('Error deleting intern permanently.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Handle Supervisor Change
   const handleSupervisorChange = async (internId: string, selectedSupervisorId: string) => {
@@ -375,18 +482,32 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
         </div>
 
         {/* Metrics Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-white border border-[#c3c6d6] rounded-xl p-4 shadow-xs flex items-center justify-between">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div
+            onClick={() => {
+              setStatusFilter('active');
+            }}
+            className={`bg-white border rounded-xl p-4 shadow-xs flex items-center justify-between cursor-pointer transition-all hover:border-[#003d9b] ${
+              statusFilter === 'active' ? 'ring-2 ring-[#003d9b]/20 border-[#003d9b]' : 'border-[#c3c6d6]'
+            }`}
+          >
             <div>
-              <p className="text-[11px] font-bold text-[#585f6a] uppercase tracking-wider">Total Interns</p>
-              <p className="text-2xl font-black text-[#041b3c] mt-1">{totalCount}</p>
+              <p className="text-[11px] font-bold text-[#585f6a] uppercase tracking-wider">Active Interns</p>
+              <p className="text-2xl font-black text-[#041b3c] mt-1">{totalActiveCount}</p>
             </div>
             <div className="w-10 h-10 rounded-full bg-[#f1f3ff] text-[#003d9b] flex items-center justify-center">
               <span className="material-symbols-outlined text-[20px]">groups</span>
             </div>
           </div>
 
-          <div className="bg-white border border-[#c3c6d6] rounded-xl p-4 shadow-xs flex items-center justify-between">
+          <div
+            onClick={() => {
+              setStatusFilter('assigned');
+            }}
+            className={`bg-white border rounded-xl p-4 shadow-xs flex items-center justify-between cursor-pointer transition-all hover:border-[#10B981] ${
+              statusFilter === 'assigned' ? 'ring-2 ring-[#10B981]/20 border-[#10B981]' : 'border-[#c3c6d6]'
+            }`}
+          >
             <div>
               <p className="text-[11px] font-bold text-[#585f6a] uppercase tracking-wider">Assigned to Supervisor</p>
               <p className="text-2xl font-black text-[#10B981] mt-1">{assignedCount}</p>
@@ -396,9 +517,14 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
             </div>
           </div>
 
-          <div className={`bg-white border rounded-xl p-4 shadow-xs flex items-center justify-between ${
-            unassignedCount > 0 ? 'border-[#f59e0b] bg-[#fffbeb]/40' : 'border-[#c3c6d6]'
-          }`}>
+          <div
+            onClick={() => {
+              setStatusFilter('unassigned');
+            }}
+            className={`bg-white border rounded-xl p-4 shadow-xs flex items-center justify-between cursor-pointer transition-all hover:border-[#f59e0b] ${
+              unassignedCount > 0 ? 'border-[#f59e0b] bg-[#fffbeb]/40' : 'border-[#c3c6d6]'
+            } ${statusFilter === 'unassigned' ? 'ring-2 ring-[#f59e0b]/30' : ''}`}
+          >
             <div>
               <div className="flex items-center gap-1.5">
                 <p className="text-[11px] font-bold text-[#b45309] uppercase tracking-wider">Unassigned Interns</p>
@@ -414,6 +540,24 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
             </div>
             <div className="w-10 h-10 rounded-full bg-[#f59e0b]/20 text-[#b45309] flex items-center justify-center">
               <span className="material-symbols-outlined text-[20px]">person_off</span>
+            </div>
+          </div>
+
+          <div
+            onClick={() => {
+              setStatusFilter('archived');
+              setShowArchived(true);
+            }}
+            className={`bg-white border rounded-xl p-4 shadow-xs flex items-center justify-between cursor-pointer transition-all hover:border-[#64748b] ${
+              statusFilter === 'archived' ? 'ring-2 ring-[#64748b]/20 border-[#64748b]' : 'border-[#c3c6d6]'
+            }`}
+          >
+            <div>
+              <p className="text-[11px] font-bold text-[#585f6a] uppercase tracking-wider">Archived / Ended</p>
+              <p className="text-2xl font-black text-[#64748b] mt-1">{archivedCount}</p>
+            </div>
+            <div className="w-10 h-10 rounded-full bg-[#f1f5f9] text-[#64748b] flex items-center justify-center">
+              <span className="material-symbols-outlined text-[20px]">archive</span>
             </div>
           </div>
         </div>
@@ -439,12 +583,12 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
             {/* Status Filter Pill Group */}
             <div className="flex bg-[#f1f3ff] p-0.5 rounded-lg border border-[#c3c6d6] text-xs">
               <button
-                onClick={() => setStatusFilter('all')}
+                onClick={() => setStatusFilter('active')}
                 className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
-                  statusFilter === 'all' ? 'bg-white text-[#003d9b] shadow-xs' : 'text-[#585f6a] hover:text-[#041b3c]'
+                  statusFilter === 'active' ? 'bg-white text-[#003d9b] shadow-xs' : 'text-[#585f6a] hover:text-[#041b3c]'
                 }`}
               >
-                All ({totalCount})
+                Active ({totalActiveCount})
               </button>
               <button
                 onClick={() => setStatusFilter('unassigned')}
@@ -467,7 +611,38 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
               >
                 Assigned ({assignedCount})
               </button>
+              <button
+                onClick={() => {
+                  setStatusFilter('archived');
+                  setShowArchived(true);
+                }}
+                className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer flex items-center gap-1 ${
+                  statusFilter === 'archived' ? 'bg-white text-[#64748b] shadow-xs' : 'text-[#585f6a] hover:text-[#041b3c]'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[14px]">archive</span>
+                <span>Archived ({archivedCount})</span>
+              </button>
+              <button
+                onClick={() => setStatusFilter('all')}
+                className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
+                  statusFilter === 'all' ? 'bg-white text-[#003d9b] shadow-xs' : 'text-[#585f6a] hover:text-[#041b3c]'
+                }`}
+              >
+                All ({totalInternsCount})
+              </button>
             </div>
+
+            {/* Show Archived Checkbox Toggle */}
+            <label className="inline-flex items-center gap-1.5 text-xs text-[#585f6a] hover:text-[#041b3c] cursor-pointer select-none bg-[#f1f3ff] px-2.5 py-1.5 rounded-lg border border-[#c3c6d6]">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+                className="rounded text-[#003d9b] focus:ring-[#003d9b] cursor-pointer"
+              />
+              <span>Show Archived</span>
+            </label>
 
             {/* Supervisor Specific Filter */}
             <div className="relative">
@@ -529,6 +704,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                 </thead>
                 <tbody className="divide-y divide-[#c3c6d6]/60">
                   {filteredInterns.map((intern) => {
+                    const isArchived = Boolean(intern.isArchived || intern.status === 'archived');
                     const isAssigned = Boolean(intern.supervisorId);
                     const isSaving = savingInternId === intern.id;
 
@@ -536,19 +712,44 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                       <tr
                         key={intern.id}
                         className={`hover:bg-[#f9f9ff] transition-colors ${
-                          !isAssigned ? 'bg-[#fffbeb]/20' : ''
+                          isArchived
+                            ? 'bg-[#f8fafc]/90 opacity-80'
+                            : !isAssigned
+                            ? 'bg-[#fffbeb]/20'
+                            : ''
                         }`}
                       >
                         {/* Intern Info */}
                         <td className="py-4 px-6">
                           <div className="flex items-center gap-3">
-                            <div className="w-9 h-9 rounded-full bg-[#003d9b] text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs border border-[#c3c6d6]">
+                            <div
+                              className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs shrink-0 shadow-xs border ${
+                                isArchived
+                                  ? 'bg-[#64748b] text-white border-[#cbd5e1]'
+                                  : 'bg-[#003d9b] text-white border-[#c3c6d6]'
+                              }`}
+                            >
                               {intern.initials || intern.name.slice(0, 2).toUpperCase()}
                             </div>
                             <div>
-                              <p className="font-bold text-[#041b3c]">{intern.name}</p>
+                              <div className="flex items-center gap-2">
+                                <p className={`font-bold ${isArchived ? 'text-[#475569]' : 'text-[#041b3c]'}`}>
+                                  {intern.name}
+                                </p>
+                                {isArchived && (
+                                  <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#fee2e2] text-[#991b1b] border border-[#fca5a5]">
+                                    <span className="material-symbols-outlined text-[12px]">archive</span>
+                                    <span>Inactive</span>
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-[11px] text-[#585f6a]">{intern.email}</p>
-                              {intern.internshipPeriod && (
+                              {isArchived && intern.archivedReason && (
+                                <p className="text-[10px] text-[#b45309] font-medium mt-0.5">
+                                  Reason: {intern.archivedReason}
+                                </p>
+                              )}
+                              {intern.internshipPeriod && !isArchived && (
                                 <p className="text-[10px] text-[#737685] mt-0.5">
                                   Period: {intern.internshipPeriod}
                                 </p>
@@ -578,7 +779,12 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
 
                         {/* Status Badge */}
                         <td className="py-4 px-4">
-                          {isAssigned ? (
+                          {isArchived ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#f1f5f9] text-[#64748b] border border-[#cbd5e1]">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#64748b]" />
+                              <span>Internship Ended</span>
+                            </span>
+                          ) : isAssigned ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#10B981]/15 text-[#047857] border border-[#10B981]/30">
                               <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" />
                               <span>Assigned</span>
@@ -598,11 +804,13 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                               <select
                                 value={intern.supervisorId || 'unassigned'}
                                 onChange={(e) => handleSupervisorChange(intern.id, e.target.value)}
-                                disabled={isSaving}
-                                className={`w-full appearance-none border rounded-lg py-2 pl-3 pr-8 text-xs font-semibold focus:outline-none transition-all cursor-pointer ${
-                                  !isAssigned
-                                    ? 'bg-[#fffbeb] border-[#f59e0b] text-[#b45309] focus:border-[#b45309] focus:ring-1 focus:ring-[#b45309]'
-                                    : 'bg-white border-[#c3c6d6] text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b]'
+                                disabled={isSaving || isArchived}
+                                className={`w-full appearance-none border rounded-lg py-2 pl-3 pr-8 text-xs font-semibold focus:outline-none transition-all ${
+                                  isArchived
+                                    ? 'bg-[#f1f5f9] border-[#cbd5e1] text-[#94a3b8] cursor-not-allowed'
+                                    : !isAssigned
+                                    ? 'bg-[#fffbeb] border-[#f59e0b] text-[#b45309] focus:border-[#b45309] focus:ring-1 focus:ring-[#b45309] cursor-pointer'
+                                    : 'bg-white border-[#c3c6d6] text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] cursor-pointer'
                                 } ${isSaving ? 'opacity-50 cursor-wait' : ''}`}
                               >
                                 <option value="unassigned">— Unassigned (No Supervisor) —</option>
@@ -619,7 +827,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                               </span>
                             </div>
 
-                            {isAssigned && (
+                            {isAssigned && !isArchived && (
                               <button
                                 onClick={() => handleSupervisorChange(intern.id, 'unassigned')}
                                 title="Remove Supervisor (Set Unassigned)"
@@ -631,30 +839,68 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                           </div>
                         </td>
 
-                        {/* Actions (Magic Link + Print Attendance Form) */}
+                        {/* Actions (Archive / Reactivate + Magic Link + Print Form + Delete Permanently) */}
                         <td className="py-4 px-6 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenLinkModal(intern)}
-                            title="Generate Magic Approval Link"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#e0e8ff] text-[#003d9b] hover:bg-[#003d9b] hover:text-white transition-all shadow-xs cursor-pointer"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">send_time_extension</span>
-                            <span>Generate Link</span>
-                          </button>
+                          <div className="inline-flex items-center gap-1.5 justify-end">
+                            {/* Primary Action: Archive or Reactivate */}
+                            {!isArchived ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenArchiveModal(intern)}
+                                title="Archive intern (mark as Inactive / Internship Ended)"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#fff7ed] text-[#c2410c] hover:bg-[#c2410c] hover:text-white border border-[#fed7aa] transition-all shadow-xs cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-[15px]">archive</span>
+                                <span>Archive</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleReactivate(intern)}
+                                disabled={savingInternId === intern.id}
+                                title="Restore intern to Active roster"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#ecfdf5] text-[#047857] hover:bg-[#047857] hover:text-white border border-[#a7f3d0] transition-all shadow-xs cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-[15px]">unarchive</span>
+                                <span>Reactivate</span>
+                              </button>
+                            )}
 
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPrintSelectedInternId(intern.id);
-                              setIsPrintAttendanceModalOpen(true);
-                            }}
-                            title={`Print Attendance Form for ${intern.name} (Pico Format)`}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#10b981]/15 text-[#047857] hover:bg-[#10b981] hover:text-white transition-all shadow-xs cursor-pointer ml-1.5"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">print</span>
-                            <span>Print Form</span>
-                          </button>
+                            {/* Magic Link */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenLinkModal(intern)}
+                              title="Generate Magic Approval Link"
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#e0e8ff] text-[#003d9b] hover:bg-[#003d9b] hover:text-white transition-all shadow-xs cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-[15px]">send_time_extension</span>
+                              <span>Link</span>
+                            </button>
+
+                            {/* Print Form */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPrintSelectedInternId(intern.id);
+                                setIsPrintAttendanceModalOpen(true);
+                              }}
+                              title={`Print Attendance Form for ${intern.name} (Pico Format)`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#10b981]/15 text-[#047857] hover:bg-[#10b981] hover:text-white transition-all shadow-xs cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-[15px]">print</span>
+                              <span>Form</span>
+                            </button>
+
+                            {/* Delete Permanently (Subtle secondary action) */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenDeleteModal(intern)}
+                              title={`Delete ${intern.name} permanently (for mistakes only)`}
+                              className="p-1.5 rounded-lg text-[#9ca3af] hover:text-[#ba1a1a] hover:bg-[#fee2e2]/60 transition-colors cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-[17px]">delete_forever</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1040,6 +1286,245 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                 className="px-4 py-2 border border-[#c3c6d6] text-[#585f6a] rounded-lg text-xs font-semibold hover:bg-[#e0e8ff] transition-colors cursor-pointer"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Archive Intern Modal */}
+      {archiveModalIntern && (
+        <div className="fixed inset-0 bg-[#041b3c]/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-[#c3c6d6] overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-[#c3c6d6] flex items-center justify-between bg-[#fffbeb]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#f59e0b]/20 text-[#b45309] flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-[22px]">archive</span>
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#041b3c]">Archive Intern (Mark Inactive)</h3>
+                  <p className="text-[11px] text-[#585f6a]">
+                    End internship status while safely retaining all historical records
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setArchiveModalIntern(null)}
+                disabled={isArchiving}
+                className="p-1 text-[#585f6a] hover:text-[#041b3c] hover:bg-white rounded-lg transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-5 space-y-4 overflow-y-auto">
+              {/* Intern Target Summary Card */}
+              <div className="bg-[#f8f9fa] border border-[#e2e8f0] rounded-xl p-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-[#003d9b] text-white flex items-center justify-center font-bold text-sm shrink-0">
+                    {archiveModalIntern.initials || archiveModalIntern.name.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-[#041b3c]">{archiveModalIntern.name}</h4>
+                    <p className="text-xs text-[#585f6a]">{archiveModalIntern.email}</p>
+                    <p className="text-[11px] text-[#003d9b] font-medium mt-0.5">
+                      {archiveModalIntern.department} • {archiveModalIntern.team || 'General'}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] uppercase font-bold text-[#585f6a] block">Recorded Shifts</span>
+                  <span className="text-sm font-black text-[#041b3c]">
+                    {effectiveAttendance.filter((r) => r.internId === archiveModalIntern.id).length} Days
+                  </span>
+                </div>
+              </div>
+
+              {/* Informational Guidance */}
+              <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl p-3.5 space-y-1.5 text-xs text-[#166534]">
+                <p className="font-bold flex items-center gap-1.5 text-[13px] text-[#15803d]">
+                  <span className="material-symbols-outlined text-[16px]">verified</span>
+                  <span>How Archiving Works:</span>
+                </p>
+                <ul className="list-disc pl-4 space-y-1 text-[11px] leading-relaxed">
+                  <li><strong>Check-in Disabled:</strong> Account is deactivated so this intern can no longer submit daily check-ins.</li>
+                  <li><strong>Removed from Active Roster:</strong> Hidden from Active counts, daily attendance lists, and default payroll calculations.</li>
+                  <li><strong>Historical Data Preserved:</strong> All past time records, supervisor reviews, and payouts remain completely intact for accounting audits.</li>
+                  <li><strong>Reversible:</strong> You can reactivate this intern anytime from the "Archived" view.</li>
+                </ul>
+              </div>
+
+              {/* Reason Selector */}
+              <div>
+                <label className="block text-xs font-bold text-[#041b3c] mb-1">
+                  Reason for Archiving / Ending Internship <span className="text-[#ba1a1a]">*</span>
+                </label>
+                <select
+                  value={archiveReason}
+                  onChange={(e) => setArchiveReason(e.target.value)}
+                  className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs font-semibold text-[#041b3c] focus:border-[#003d9b] outline-none cursor-pointer"
+                >
+                  <option value="Internship Period Completed">Internship Period Completed (Normal)</option>
+                  <option value="Academic Semester Concluded">Academic Semester Concluded</option>
+                  <option value="Contract Ended">Contract Term Ended</option>
+                  <option value="Early Resignation / Withdrawn">Early Resignation / Withdrawn</option>
+                  <option value="Other">Other / Custom Note</option>
+                </select>
+              </div>
+
+              {/* Optional Custom Note */}
+              <div>
+                <label className="block text-xs font-bold text-[#041b3c] mb-1">
+                  Additional Notes (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Completed final evaluation and university handover"
+                  value={archiveCustomReason}
+                  onChange={(e) => setArchiveCustomReason(e.target.value)}
+                  className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2 text-xs text-[#041b3c] focus:border-[#003d9b] outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-4 border-t border-[#c3c6d6] bg-[#f9f9ff] flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setArchiveModalIntern(null)}
+                disabled={isArchiving}
+                className="px-4 py-2 border border-[#c3c6d6] text-[#585f6a] rounded-xl text-xs font-semibold hover:bg-[#e0e8ff] transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmArchive}
+                disabled={isArchiving}
+                className="px-5 py-2 bg-[#b45309] hover:bg-[#92400e] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isArchiving ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Archiving...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">archive</span>
+                    <span>Confirm Archive Intern</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Permanently Modal */}
+      {deleteModalIntern && (
+        <div className="fixed inset-0 bg-[#041b3c]/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-[#ba1a1a]/30 overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-[#ba1a1a]/20 flex items-center justify-between bg-[#fff1f2]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#fee2e2] text-[#ba1a1a] flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-[22px]">warning</span>
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#ba1a1a]">Permanently Delete Intern</h3>
+                  <p className="text-[11px] text-[#585f6a]">
+                    Irreversible action — intended only for test entries or mistakes
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteModalIntern(null)}
+                disabled={isDeleting}
+                className="p-1 text-[#585f6a] hover:text-[#041b3c] hover:bg-white rounded-lg transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-5 space-y-4 overflow-y-auto">
+              {/* Target Intern Card */}
+              <div className="bg-[#fef2f2] border border-[#fecaca] rounded-xl p-3.5 flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-sm text-[#991b1b]">{deleteModalIntern.name}</h4>
+                  <p className="text-xs text-[#7f1d1d]">{deleteModalIntern.email}</p>
+                  <p className="text-[11px] text-[#991b1b] font-medium mt-0.5">
+                    {deleteModalIntern.department}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] uppercase font-bold text-[#7f1d1d] block">Attendance Logs</span>
+                  <span className="text-sm font-black text-[#991b1b]">
+                    {effectiveAttendance.filter((r) => r.internId === deleteModalIntern.id).length} Records
+                  </span>
+                </div>
+              </div>
+
+              {/* Warning Notice */}
+              <div className="bg-[#fee2e2]/60 border border-[#f87171] rounded-xl p-3.5 space-y-2 text-xs text-[#991b1b]">
+                <p className="font-black text-sm text-[#7f1d1d] flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[18px]">report</span>
+                  <span>CRITICAL WARNING: This CANNOT be undone!</span>
+                </p>
+                <p className="text-[11px] leading-relaxed">
+                  Permanently deleting this intern will completely erase their user account and cascade delete all associated records from Firestore:
+                </p>
+                <ul className="list-disc pl-4 space-y-1 text-[11px]">
+                  <li>User profile document for <strong>{deleteModalIntern.name}</strong></li>
+                  <li><strong>{effectiveAttendance.filter((r) => r.internId === deleteModalIntern.id).length}</strong> check-in and check-out attendance records</li>
+                  <li>All monthly supervisor review documents</li>
+                  <li>All calculated payroll summary records</li>
+                </ul>
+              </div>
+
+              {effectiveAttendance.filter((r) => r.internId === deleteModalIntern.id).length > 0 && (
+                <div className="bg-[#fffbeb] border border-[#fcd34d] rounded-xl p-3 text-xs text-[#92400e] flex items-start gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-[#b45309] shrink-0 mt-0.5">
+                    lightbulb
+                  </span>
+                  <p className="text-[11px] leading-relaxed">
+                    <strong>Recommendation:</strong> This intern already has recorded attendance data. If they actually worked shifts at Pico, please click <strong>Cancel</strong> and choose <strong>Archive</strong> instead so their attendance history remains available for auditing and payroll verification.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-4 border-t border-[#c3c6d6] bg-[#f9f9ff] flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setDeleteModalIntern(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 border border-[#c3c6d6] text-[#585f6a] rounded-xl text-xs font-semibold hover:bg-[#e0e8ff] transition-colors cursor-pointer"
+              >
+                Cancel (Keep Intern)
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeletePermanently}
+                disabled={isDeleting}
+                className="px-5 py-2 bg-[#ba1a1a] hover:bg-[#991b1b] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Deleting Permanently...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">delete_forever</span>
+                    <span>Yes, Permanently Delete All Data</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
