@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { InternMonthlyReview, AttendanceRecord } from '../types';
 import { isMissingCheckout, calculateDurationStr } from '../utils/attendanceLogUtils';
 import { getMergedRecordNotes } from '../utils/noteUtils';
+import { AuditBadge } from './AuditBadge';
 
 interface DetailReviewModalProps {
   review: InternMonthlyReview;
@@ -18,8 +19,15 @@ export const DetailReviewModal: React.FC<DetailReviewModalProps> = ({
 }) => {
   const isApproved = review.status === 'approved';
   const records = review.records || [];
-  const officeCount = review.officeDaysCount ?? records.filter((r) => r.locationType === 'office').length;
-  const outsideCount = review.outsideDaysCount ?? records.filter((r) => r.locationType === 'outside').length;
+  const officeCount = records.length > 0
+    ? records.filter((r) => r.locationType === 'office').length
+    : (review.officeDaysCount ?? 0);
+  const outsideCount = records.length > 0
+    ? records.filter((r) => r.locationType === 'outside').length
+    : (review.outsideDaysCount ?? 0);
+  const totalDays = records.length > 0
+    ? officeCount + outsideCount
+    : (review.daysLogged ?? (officeCount + outsideCount));
 
   const missingRecords = records.filter(isMissingCheckout);
   const hasMissingCheckout = missingRecords.length > 0;
@@ -61,7 +69,7 @@ export const DetailReviewModal: React.FC<DetailReviewModalProps> = ({
             <div>
               <h3 className="text-[18px] font-bold text-[#041b3c]">{review.name}</h3>
               <p className="text-xs text-[#585f6a]">
-                {review.department} • {review.monthYear} • {review.daysLogged} Days Logged
+                {review.department} • {review.monthYear} • {totalDays} Days Logged
               </p>
             </div>
           </div>
@@ -93,7 +101,7 @@ export const DetailReviewModal: React.FC<DetailReviewModalProps> = ({
           <div className="grid grid-cols-3 gap-3">
             <div className="bg-[#f9f9ff] border border-[#c3c6d6] p-3 rounded-xl text-center">
               <span className="text-[11px] text-[#585f6a] block uppercase font-medium">Total Days</span>
-              <span className="text-[20px] font-bold text-[#041b3c]">{review.daysLogged}</span>
+              <span className="text-[20px] font-bold text-[#041b3c]">{totalDays}</span>
             </div>
             <div className="bg-[#f9f9ff] border border-[#c3c6d6] p-3 rounded-xl text-center">
               <span className="text-[11px] text-[#585f6a] block uppercase font-medium">Office Days</span>
@@ -154,6 +162,17 @@ export const DetailReviewModal: React.FC<DetailReviewModalProps> = ({
                               <span className="material-symbols-outlined text-[12px]">travel_explore</span>
                               Outside
                             </span>
+                          )}
+
+                          {/* Admin Audit Badge */}
+                          {(rec.isManuallyAdded || rec.isManuallyEdited) && (
+                            <AuditBadge
+                              isManuallyAdded={rec.isManuallyAdded}
+                              isManuallyEdited={rec.isManuallyEdited}
+                              lastEditedBy={rec.lastEditedBy}
+                              auditHistory={rec.auditHistory}
+                              recordId={rec.id}
+                            />
                           )}
 
                           {/* Missing Check-out badge */}

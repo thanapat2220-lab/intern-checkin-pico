@@ -1,12 +1,34 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { AttendanceRecord, ScreenView, UserProfile, RawAttendanceLogEntry } from '../types';
+import {
+  AttendanceRecord,
+  ScreenView,
+  UserProfile,
+  RawAttendanceLogEntry,
+  AttendanceAuditLog,
+  PayrollRecord,
+  InternMonthlyReview,
+} from '../types';
 import { buildRawAttendanceLogEntries, exportAttendanceLogsToCSV, calculateDurationStr } from '../utils/attendanceLogUtils';
+import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
 import { InternAttendanceFormModal } from './InternAttendanceFormModal';
+import { AddAttendanceRecordModal } from './AddAttendanceRecordModal';
+import { EditAttendanceRecordModal } from './EditAttendanceRecordModal';
+import { DeleteAttendanceRecordModal } from './DeleteAttendanceRecordModal';
+import { AttendanceAuditTrailModal } from './AttendanceAuditTrailModal';
+import { AuditBadge } from './AuditBadge';
+import {
+  subscribeToAttendanceAuditLogs,
+  adminApproveInternMonth,
+  adminRevokeInternMonthApproval,
+  adminApproveAllInternsForMonth,
+} from '../services/dbService';
 
 interface AttendanceLogsScreenProps {
   user: UserProfile;
   attendanceRecords: AttendanceRecord[];
   allUsers: UserProfile[];
+  payrollRecords?: PayrollRecord[];
+  monthlyReviews?: InternMonthlyReview[];
   onLogout: () => void;
   onSwitchScreen: (screen: ScreenView) => void;
 }
@@ -29,7 +51,9 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
   user,
   attendanceRecords,
   allUsers,
-  onLogout,
+  payrollRecords = [],
+  monthlyReviews = [],
+  onLogout: _onLogout,
   onSwitchScreen,
 }) => {
   // 1. Dual View Mode: 'all_combined' (overview table) vs 'per_intern' (filtered individual history)
@@ -73,6 +97,31 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
   // 9. Per-Intern Attendance Form (Pico Format) Print Modal
   const [isPrintFormOpen, setIsPrintFormOpen] = useState<boolean>(false);
   const [printFormInternId, setPrintFormInternId] = useState<string>('');
+
+  // 10. Admin Manual Attendance Corrections & Audit Trail States
+  const [auditLogs, setAuditLogs] = useState<AttendanceAuditLog[]>([]);
+  const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
+  const [editingEntry, setEditingEntry] = useState<RawAttendanceLogEntry | null>(null);
+  const [deletingEntry, setDeletingEntry] = useState<RawAttendanceLogEntry | null>(null);
+  const [isAuditTrailModalOpen, setIsAuditTrailModalOpen] = useState<boolean>(false);
+  const [auditFilterRecordId, setAuditFilterRecordId] = useState<string | null>(null);
+  const [toastNotification, setToastNotification] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
+
+  // Subscribe to real-time audit trail logs
+  useEffect(() => {
+    const unsub = subscribeToAttendanceAuditLogs((logs) => {
+      setAuditLogs(logs);
+    });
+    return () => unsub();
+  }, []);
+
+  // Toast notification auto-dismiss
+  useEffect(() => {
+    if (toastNotification) {
+      const timer = setTimeout(() => setToastNotification(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastNotification]);
 
   // Unique list of interns and departments for filter dropdowns & quick selector
   const internsList = useMemo(() => {
@@ -121,6 +170,93 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
     });
     return Array.from(set).sort();
   }, [effectiveUsers, rawEntries]);
+
+  // 11. Approval Workflow States & Helpers
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => formatMonthYear());
+  const monthOptions = useMemo(() => getRecentMonthDropdownOptions(5, 1), []);
+  const [isApprovingId, setIsApprovingId] = useState<string | null>(null);
+
+  const isInternApproved = (internId: string, month: string = selectedMonth): boolean => {
+    const normMonth = month.trim().toLowerCase();
+    const pay = payrollRecords?.find(
+      (p) => p.internId === internId && (p.monthYear || '').trim().toLowerCase() === normMonth
+    );
+    if (pay?.status === 'Approved') return true;
+    const rev = monthlyReviews?.find(
+      (r) => r.internId === internId && (r.monthYear || '').trim().toLowerCase() === normMonth
+    );
+    return rev?.status === 'approved';
+  };
+
+  const monthApprovalStats = useMemo(() => {
+    const total = internsList.length;
+    const approved = internsList.filter((i) => isInternApproved(i.id, selectedMonth)).length;
+    const pending = total - approved;
+    return { total, approved, pending };
+  }, [internsList, payrollRecords, monthlyReviews, selectedMonth]);
+
+  const handleApproveIntern = async (internId: string, internName: string) => {
+    try {
+      setIsApprovingId(internId);
+      await adminApproveInternMonth(internId, selectedMonth, user);
+      setToastNotification({
+        message: `Approved ${internName}'s attendance for ${selectedMonth} (Physical paper signature verified).`,
+        type: 'success',
+      });
+    } catch (err) {
+      console.error('Approval error:', err);
+      setToastNotification({
+        message: `Failed to approve attendance for ${internName}. Please try again.`,
+        type: 'info',
+      });
+    } finally {
+      setIsApprovingId(null);
+    }
+  };
+
+  const handleRevokeIntern = async (internId: string, internName: string) => {
+    try {
+      setIsApprovingId(internId);
+      await adminRevokeInternMonthApproval(internId, selectedMonth);
+      setToastNotification({
+        message: `Reverted ${internName}'s attendance for ${selectedMonth} to Pending.`,
+        type: 'info',
+      });
+    } catch (err) {
+      console.error('Revoke error:', err);
+    } finally {
+      setIsApprovingId(null);
+    }
+  };
+
+  const handleApproveAll = async () => {
+    try {
+      setIsApprovingId('all');
+      const pendingIds = internsList
+        .filter((intern) => !isInternApproved(intern.id, selectedMonth))
+        .map((i) => i.id);
+      if (pendingIds.length === 0) {
+        setToastNotification({
+          message: `All ${internsList.length} interns are already approved for ${selectedMonth}.`,
+          type: 'info',
+        });
+        return;
+      }
+      await adminApproveAllInternsForMonth(pendingIds, selectedMonth, user);
+      setToastNotification({
+        message: `Approved all ${pendingIds.length} intern attendance records for ${selectedMonth} (Physical paper signatures verified).`,
+        type: 'success',
+      });
+    } catch (err) {
+      console.error('Bulk approval error:', err);
+      setToastNotification({
+        message: 'Failed to complete bulk approval. Please try again.',
+        type: 'info',
+      });
+    } finally {
+      setIsApprovingId(null);
+    }
+  };
 
   // Filtered raw entries pool respecting showArchived toggle for KPIs
   const effectiveRawEntries = useMemo(() => {
@@ -427,20 +563,41 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
                 <span>Interns</span>
               </button>
               <button
-                onClick={() => onSwitchScreen('supervisor')}
-                className="px-2.5 py-1.5 rounded-md text-[#585f6a] hover:text-[#041b3c] transition-colors flex items-center gap-1 cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[16px]">verified</span>
-                <span>Approvals</span>
-              </button>
-              <button
-                onClick={() => onSwitchScreen('payroll_export')}
+                onClick={() => onSwitchScreen('payroll_admin')}
                 className="px-2.5 py-1.5 rounded-md text-[#585f6a] hover:text-[#041b3c] transition-colors flex items-center gap-1 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[16px]">payments</span>
-                <span>Payroll</span>
+                <span>Payroll Summary</span>
               </button>
             </div>
+
+            {/* 1. Add Record Action */}
+            <button
+              onClick={() => setIsAddModalOpen(true)}
+              className="px-3 py-2 bg-[#0052cc] hover:bg-[#0040a2] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer"
+              title="Manually create an attendance entry for an intern who forgot to log"
+            >
+              <span className="material-symbols-outlined text-[16px]">add_circle</span>
+              <span>Add Record</span>
+            </button>
+
+            {/* 2. Audit Trail Action */}
+            <button
+              onClick={() => {
+                setAuditFilterRecordId(null);
+                setIsAuditTrailModalOpen(true);
+              }}
+              className="px-3 py-2 bg-[#f1f3ff] hover:bg-[#e0e8ff] text-[#003d9b] border border-[#c3c6d6] rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all active:scale-95 cursor-pointer"
+              title="Inspect administrative edits, manual additions, and deletions audit trail"
+            >
+              <span className="material-symbols-outlined text-[16px]">history_edu</span>
+              <span>Audit Trail</span>
+              {auditLogs.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-[#003d9b] text-white">
+                  {auditLogs.length}
+                </span>
+              )}
+            </button>
 
             <button
               onClick={() => {
@@ -448,16 +605,16 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
                 setPrintFormInternId(targetId);
                 setIsPrintFormOpen(true);
               }}
-              className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer"
+              className="px-3 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer"
               title="Print or Save Per-Intern Attendance Form (Pico Format)"
             >
               <span className="material-symbols-outlined text-[16px]">print</span>
-              <span>Print Attendance Form</span>
+              <span>Print Form</span>
             </button>
 
             <button
               onClick={handleExportCSV}
-              className="px-3.5 py-2 bg-[#0052cc] hover:bg-[#0040a2] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer"
+              className="px-3 py-2 bg-[#f9f9ff] hover:bg-[#f1f3ff] text-[#041b3c] border border-[#c3c6d6] rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all active:scale-95 cursor-pointer"
               title="Export filtered records to CSV"
             >
               <span className="material-symbols-outlined text-[16px]">download</span>
@@ -466,6 +623,25 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
           </div>
         </div>
       </header>
+
+      {/* Floating Toast Notification */}
+      {toastNotification && (
+        <div className="fixed top-20 right-6 z-50 animate-in slide-in-from-top-3 fade-in duration-300">
+          <div className="p-3.5 bg-[#041b3c] text-white rounded-xl shadow-xl flex items-center gap-2.5 text-xs border border-white/10">
+            <span className="material-symbols-outlined text-[#10b981] text-[18px]">
+              check_circle
+            </span>
+            <span className="font-semibold">{toastNotification.message}</span>
+            <button
+              type="button"
+              onClick={() => setToastNotification(null)}
+              className="ml-2 text-white/60 hover:text-white"
+            >
+              <span className="material-symbols-outlined text-[16px]">close</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-5 space-y-5 flex-1 w-full flex flex-col">
@@ -517,6 +693,37 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
               >
                 {selectedInternProfile?.name.split(' ')[0] || 'Selected'}
               </span>
+            </button>
+          </div>
+
+          {/* Top Primary Actions: Add Record & Audit Trail */}
+          <div className="flex items-center gap-2.5 w-full md:w-auto justify-end flex-wrap">
+            <button
+              type="button"
+              onClick={() => setIsAddModalOpen(true)}
+              className="px-4 py-2.5 bg-[#0052cc] hover:bg-[#0040a2] text-white text-xs font-bold rounded-xl shadow-sm transition-all flex items-center gap-2 cursor-pointer active:scale-95"
+              title="Manually create an attendance entry for an intern who forgot to check in"
+            >
+              <span className="material-symbols-outlined text-[18px]">add_circle</span>
+              <span>+ Add Record</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setAuditFilterRecordId(null);
+                setIsAuditTrailModalOpen(true);
+              }}
+              className="px-3.5 py-2.5 bg-[#f1f3ff] hover:bg-[#e0e8ff] text-[#003d9b] border border-[#c3c6d6] text-xs font-bold rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+              title="Audit trail of administrative corrections"
+            >
+              <span className="material-symbols-outlined text-[18px]">history_edu</span>
+              <span>Audit Trail</span>
+              {auditLogs.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-[#003d9b] text-white">
+                  {auditLogs.length}
+                </span>
+              )}
             </button>
           </div>
         </section>
@@ -641,17 +848,68 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      setPrintFormInternId(selectedInternProfile.id);
-                      setIsPrintFormOpen(true);
-                    }}
-                    className="px-3.5 py-2.5 bg-[#22c55e] hover:bg-[#16a34a] text-black font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer shrink-0"
-                    title="Print or Save Per-Intern Attendance Form (Pico Format)"
-                  >
-                    <span className="material-symbols-outlined text-[17px]">print</span>
-                    <span>Print Form</span>
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    {/* Monthly Physical Approval Status & Action for this intern */}
+                    {isInternApproved(selectedInternProfile.id, selectedMonth) ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center gap-1.5 px-3 py-2 bg-[#e6f4ea] text-[#137333] border border-[#a8dab5] rounded-xl font-bold text-xs shadow-2xs">
+                          <span className="material-symbols-outlined text-[17px]">verified</span>
+                          <span>{selectedMonth} Approved</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRevokeIntern(selectedInternProfile.id, selectedInternProfile.name)}
+                          disabled={isApprovingId === selectedInternProfile.id}
+                          className="px-2.5 py-2 text-xs font-semibold text-[#585f6a] hover:text-[#ba1a1a] hover:bg-[#fff1f2] border border-[#c3c6d6] rounded-xl transition-all cursor-pointer"
+                          title="Revert approval back to Pending"
+                        >
+                          Undo
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleApproveIntern(selectedInternProfile.id, selectedInternProfile.name)}
+                        disabled={isApprovingId === selectedInternProfile.id}
+                        className="px-3.5 py-2.5 bg-[#0052cc] hover:bg-[#0040a2] text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-50"
+                        title={`Approve ${selectedInternProfile.name}'s ${selectedMonth} attendance after receiving physically signed Attendance Form`}
+                      >
+                        {isApprovingId === selectedInternProfile.id ? (
+                          <>
+                            <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            <span>Approving...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="material-symbols-outlined text-[17px]">verified</span>
+                            <span>Approve {selectedMonth}</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setIsAddModalOpen(true)}
+                      className="px-3.5 py-2.5 bg-[#f1f3ff] hover:bg-[#e0e8ff] text-[#0052cc] border border-[#c3c6d6] font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all active:scale-95 cursor-pointer shrink-0"
+                      title={`Manually add an attendance shift for ${selectedInternProfile.name}`}
+                    >
+                      <span className="material-symbols-outlined text-[17px]">add_circle</span>
+                      <span>+ Add Shift</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setPrintFormInternId(selectedInternProfile.id);
+                        setIsPrintFormOpen(true);
+                      }}
+                      className="px-3.5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer shrink-0"
+                      title="Print or Save Per-Intern Attendance Form (Pico Format)"
+                    >
+                      <span className="material-symbols-outlined text-[17px]">print</span>
+                      <span>Print Form</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -674,10 +932,79 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* KPI / METRIC CHIPS (Active in all_combined mode)                           */}
+        {/* KPI / METRIC CHIPS & PHYSICAL APPROVAL WORKFLOW BANNER (all_combined mode) */}
         {/* ========================================================================= */}
         {viewMode === 'all_combined' && (
-          <section className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <>
+            {/* Physical Paper Approval Workflow Banner */}
+            <section className="bg-linear-to-r from-[#041b3c] to-[#0a2f64] text-white rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center text-[#93c5fd] shrink-0">
+                  <span className="material-symbols-outlined text-[24px]">contract_edit</span>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-bold text-sm text-white">Physical Paper Approval Workflow</h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#10b981]/25 text-[#6ee7b7] border border-[#10b981]/30">
+                      Payroll Admin Sign-off
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#c3c6d6] mt-0.5 max-w-xl">
+                    Print individual Attendance Forms for supervisors' physical ink signatures. Once signed paper forms are returned to HR/Admin, click Approve for payroll disbursal.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5 w-full md:w-auto justify-end flex-wrap">
+                <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/15 text-xs">
+                  <span className="text-[#c3c6d6]">Month:</span>
+                  <select
+                    value={selectedMonth}
+                    onChange={(e) => setSelectedMonth(e.target.value)}
+                    className="bg-transparent text-white font-bold focus:outline-none cursor-pointer"
+                  >
+                    {monthOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value} className="text-[#041b3c]">
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="bg-white/10 px-3 py-1.5 rounded-xl border border-white/15 text-xs font-semibold whitespace-nowrap">
+                  <span>{monthApprovalStats.approved} of {monthApprovalStats.total} Approved</span>
+                </div>
+
+                {monthApprovalStats.pending > 0 ? (
+                  <button
+                    type="button"
+                    onClick={handleApproveAll}
+                    disabled={isApprovingId === 'all'}
+                    className="px-3.5 py-2 bg-[#10b981] hover:bg-[#059669] text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                    title={`Approve all ${monthApprovalStats.pending} pending interns for ${selectedMonth} (Physical paper signatures verified)`}
+                  >
+                    {isApprovingId === 'all' ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Approving All...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-[16px]">verified</span>
+                        <span>Approve All ({monthApprovalStats.pending} Pending)</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <span className="px-3 py-1.5 bg-[#10b981]/20 text-[#6ee7b7] border border-[#10b981]/30 rounded-xl text-xs font-bold flex items-center gap-1 whitespace-nowrap">
+                    <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                    <span>100% Approved for {selectedMonth}</span>
+                  </span>
+                )}
+              </div>
+            </section>
+
+            <section className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             {/* Total Days Logged */}
             <div className="bg-white p-3.5 rounded-xl border border-[#c3c6d6]/60 shadow-2xs flex items-center justify-between">
               <div>
@@ -783,6 +1110,7 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
               </div>
             </div>
           </section>
+        </>
         )}
 
         {/* ========================================================================= */}
@@ -1278,7 +1606,6 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
                   </tr>
                 ) : (
                   paginatedEntries.map((entry) => {
-                    const isMissingOut = entry.status === 'missing_checkout';
                     const isActive = entry.status === 'active';
                     const isCompleted = entry.status === 'completed';
 
@@ -1339,6 +1666,21 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
                               <p className="text-[10px] text-[#585f6a]">
                                 {entry.internDepartment} {entry.internTeam ? `• ${entry.internTeam}` : ''}
                               </p>
+                              {(entry.isManuallyAdded || entry.isManuallyEdited) && (
+                                <div className="mt-1">
+                                  <AuditBadge
+                                    isManuallyAdded={entry.isManuallyAdded}
+                                    isManuallyEdited={entry.isManuallyEdited}
+                                    lastEditedBy={entry.lastEditedBy}
+                                    auditHistory={entry.auditHistory}
+                                    recordId={entry.recordId}
+                                    onClickAudit={(recId) => {
+                                      setAuditFilterRecordId(recId || entry.recordId);
+                                      setIsAuditTrailModalOpen(true);
+                                    }}
+                                  />
+                                </div>
+                              )}
                             </div>
                           </div>
                         </td>
@@ -1441,13 +1783,61 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
 
                         {/* Action Column */}
                         <td className="py-3 px-4 text-right">
-                          <button
-                            onClick={() => setSelectedEntry(entry)}
-                            className="px-2.5 py-1 text-xs font-bold text-[#0052cc] bg-[#f1f3ff] hover:bg-[#e0e8ff] rounded-md transition-colors cursor-pointer inline-flex items-center gap-1"
-                          >
-                            <span>Audit</span>
-                            <span className="material-symbols-outlined text-[14px]">visibility</span>
-                          </button>
+                          <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                            {/* Monthly Approval Action / Status for this Intern */}
+                            {isInternApproved(entry.internId, entry.monthYear || selectedMonth) ? (
+                              <span
+                                className="px-2 py-0.5 text-[10px] font-bold text-[#047857] bg-[#ecfdf5] border border-[#a7f3d0] rounded-md inline-flex items-center gap-0.5 shrink-0"
+                                title={`${entry.internName}'s attendance is approved for payroll (Signed Paper)`}
+                              >
+                                <span className="material-symbols-outlined text-[12px]">verified</span>
+                                <span className="hidden xl:inline">Approved</span>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleApproveIntern(entry.internId, entry.internName)}
+                                disabled={isApprovingId === entry.internId}
+                                className="px-2 py-1 text-xs font-bold text-[#047857] bg-[#ecfdf5] hover:bg-[#047857] hover:text-white rounded-md transition-colors cursor-pointer inline-flex items-center gap-1 shadow-2xs border border-[#a7f3d0]"
+                                title={`Approve ${entry.internName}'s monthly attendance (Paper signed)`}
+                              >
+                                <span className="material-symbols-outlined text-[13px]">verified</span>
+                                <span className="hidden xl:inline">Approve</span>
+                              </button>
+                            )}
+
+                            {/* Edit Button */}
+                            <button
+                              type="button"
+                              onClick={() => setEditingEntry(entry)}
+                              className="px-2.5 py-1 text-xs font-bold text-[#0052cc] bg-[#f1f3ff] hover:bg-[#0052cc] hover:text-white rounded-md transition-colors cursor-pointer inline-flex items-center gap-1 shadow-2xs"
+                              title="Edit check-in, check-out, location, or notes"
+                            >
+                              <span className="material-symbols-outlined text-[14px]">edit</span>
+                              <span className="hidden sm:inline">Edit</span>
+                            </button>
+
+                            {/* Delete Button */}
+                            <button
+                              type="button"
+                              onClick={() => setDeletingEntry(entry)}
+                              className="px-2 py-1 text-xs font-bold text-[#b91c1c] bg-[#fee2e2]/60 hover:bg-[#b91c1c] hover:text-white rounded-md transition-colors cursor-pointer inline-flex items-center gap-1 shadow-2xs"
+                              title="Delete attendance record"
+                            >
+                              <span className="material-symbols-outlined text-[14px]">delete</span>
+                              <span className="hidden sm:inline">Delete</span>
+                            </button>
+
+                            {/* Audit / Details */}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedEntry(entry)}
+                              className="p-1 text-xs font-bold text-[#585f6a] bg-[#f1f3ff] hover:bg-[#e0e8ff] hover:text-[#041b3c] rounded-md transition-colors cursor-pointer inline-flex items-center"
+                              title="View entry details"
+                            >
+                              <span className="material-symbols-outlined text-[16px]">visibility</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1647,6 +2037,86 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
         attendanceRecords={effectiveRecords}
         allUsers={effectiveUsers}
       />
+
+      {/* 1. Admin Edit Attendance Record Modal */}
+      <EditAttendanceRecordModal
+        isOpen={Boolean(editingEntry)}
+        onClose={() => setEditingEntry(null)}
+        entry={editingEntry}
+        adminUser={user}
+        onSuccess={() => {
+          setToastNotification({
+            message: `Attendance record for ${editingEntry?.internName || 'intern'} updated successfully. Changes recorded to Audit Trail.`,
+            type: 'success',
+          });
+        }}
+      />
+
+      {/* 2. Admin Add Attendance Record Modal */}
+      <AddAttendanceRecordModal
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+        interns={effectiveUsers.filter((u) => u.role === 'intern')}
+        adminUser={user}
+        initialInternId={viewMode === 'per_intern' && selectedInternProfile ? selectedInternProfile.id : undefined}
+        onSuccess={(created) => {
+          setToastNotification({
+            message: `Attendance shift on ${created.monthName} ${created.date} manually added. Logged to Audit Trail.`,
+            type: 'success',
+          });
+        }}
+      />
+
+      {/* 3. Admin Delete Attendance Record Modal */}
+      <DeleteAttendanceRecordModal
+        isOpen={Boolean(deletingEntry)}
+        onClose={() => setDeletingEntry(null)}
+        entry={deletingEntry}
+        adminUser={user}
+        onSuccess={() => {
+          setToastNotification({
+            message: `Attendance shift for ${deletingEntry?.internName || 'intern'} deleted. Recorded to Audit Trail.`,
+            type: 'info',
+          });
+        }}
+      />
+
+      {/* 4. Attendance Audit Trail Modal */}
+      <AttendanceAuditTrailModal
+        isOpen={isAuditTrailModalOpen}
+        onClose={() => {
+          setIsAuditTrailModalOpen(false);
+          setAuditFilterRecordId(null);
+        }}
+        auditLogs={auditLogs}
+        filterRecordId={auditFilterRecordId}
+        onClearRecordFilter={() => setAuditFilterRecordId(null)}
+        interns={effectiveUsers.filter((u) => u.role === 'intern')}
+      />
+
+      {/* Toast Notification */}
+      {toastNotification && (
+        <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <div
+            className={`px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 text-xs font-bold text-white border ${
+              toastNotification.type === 'success'
+                ? 'bg-[#059669] border-[#10b981]'
+                : 'bg-[#0052cc] border-[#3b82f6]'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[18px]">
+              {toastNotification.type === 'success' ? 'check_circle' : 'info'}
+            </span>
+            <span>{toastNotification.message}</span>
+            <button
+              onClick={() => setToastNotification(null)}
+              className="ml-2 p-0.5 hover:bg-white/20 rounded cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-[16px]">close</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

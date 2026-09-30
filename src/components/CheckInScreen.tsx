@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { AttendanceRecord, LocationType, ScreenView, UserProfile } from '../types';
+import { AttendanceRecord, LocationType, UserProfile } from '../types';
 import { formatMonthYear, formatShortMonth } from '../utils/dateUtils';
 import { calculateDurationStr, isMissingCheckout } from '../utils/attendanceLogUtils';
 import { formatMergedNotes, getMergedRecordNotes } from '../utils/noteUtils';
@@ -9,7 +9,7 @@ interface CheckInScreenProps {
   attendanceLogs: AttendanceRecord[];
   onCheckIn: (record: AttendanceRecord) => void;
   onCheckOut: (recordId: string, checkOutTime: string, note?: string) => void;
-  onNavigate: (screen: ScreenView) => void;
+  onNavigate: (tab: 'checkin' | 'history' | 'profile') => void;
   onOpenMenu: () => void;
 }
 

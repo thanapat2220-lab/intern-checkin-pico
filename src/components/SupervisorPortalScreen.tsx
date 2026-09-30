@@ -8,21 +8,21 @@ interface SupervisorPortalScreenProps {
   user: UserProfile;
   reviews: InternMonthlyReview[];
   onApproveReview: (reviewId: string) => void;
-  onApproveAll: () => void;
-  onOpenGpsReview?: (review) => void;
+  onApproveAll?: () => void;
+  onOpenGpsReview?: (review: InternMonthlyReview) => void;
   onOpenDetailReview: (review: InternMonthlyReview) => void;
   onLogout: () => void;
-  onSwitchScreen: (screen: any) => void;
+  onSwitchScreen?: (screen: any) => void;
 }
 
 export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
   user,
   reviews,
   onApproveReview,
-  onApproveAll,
+  onApproveAll: _onApproveAll,
   onOpenDetailReview,
   onLogout,
-  onSwitchScreen,
+  onSwitchScreen: _onSwitchScreen,
 }) => {
   const [selectedMonth, setSelectedMonth] = useState(() => formatMonthYear());
   const monthOptions = useMemo(() => getRecentMonthDropdownOptions(5, 1), []);
@@ -348,10 +348,18 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
                 const isApproved = rev.status === 'approved';
                 const isPending = rev.status === 'pending';
 
-                // Calculate office vs outside count if not preset
-                const officeCount = rev.officeDaysCount ?? (rev.records ? rev.records.filter((r) => r.locationType === 'office').length : 0);
-                const outsideCount = rev.outsideDaysCount ?? (rev.records ? rev.records.filter((r) => r.locationType === 'outside').length : 0);
-                const missingRecords = rev.records ? rev.records.filter(isMissingCheckout) : [];
+                // Calculate office vs outside count consistently
+                const records = rev.records || [];
+                const officeCount = records.length > 0
+                  ? records.filter((r) => r.locationType === 'office').length
+                  : (rev.officeDaysCount ?? 0);
+                const outsideCount = records.length > 0
+                  ? records.filter((r) => r.locationType === 'outside').length
+                  : (rev.outsideDaysCount ?? 0);
+                const totalDays = records.length > 0
+                  ? officeCount + outsideCount
+                  : (rev.daysLogged ?? (officeCount + outsideCount));
+                const missingRecords = records.filter(isMissingCheckout);
                 const hasMissing = missingRecords.length > 0;
 
                 return (
@@ -395,7 +403,7 @@ export const SupervisorPortalScreen: React.FC<SupervisorPortalScreenProps> = ({
                           </span>
                           <span className="text-[#c3c6d6]">•</span>
                           <span className="text-[12px] font-semibold text-[#041b3c]">
-                            {rev.daysLogged} Total Days
+                            {totalDays} Total Days
                           </span>
                         </div>
 

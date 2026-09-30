@@ -1,12 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { PayrollRecord, UserProfile, AttendanceRecord, FinalizedPayrollCycle } from '../types';
-import { ASSET_IMAGES } from '../data/mockData';
-import { formatMonthYear, getRecentMonthDropdownOptions, getMonthPeriodRange } from '../utils/dateUtils';
+import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
 import { getMergedRecordNotes } from '../utils/noteUtils';
 import { PrintablePayrollReport } from './PrintablePayrollReport';
+import { AuditBadge } from './AuditBadge';
 import {
-  finalizePayrollCycle,
-  unlockPayrollCycle,
   subscribeToFinalizedPayrollCycles,
 } from '../services/dbService';
 
@@ -79,10 +77,6 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
   // Modals
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [showPrintReportModal, setShowPrintReportModal] = useState<boolean>(false);
-  const [showFinalizeModal, setShowFinalizeModal] = useState<boolean>(false);
-  const [isFinalizing, setIsFinalizing] = useState<boolean>(false);
-  const [showUnlockModal, setShowUnlockModal] = useState<boolean>(false);
-  const [isUnlocking, setIsUnlocking] = useState<boolean>(false);
   const [showSubmitPayrollModal, setShowSubmitPayrollModal] = useState<boolean>(false);
   const [isPayrollSubmitted, setIsPayrollSubmitted] = useState<boolean>(false);
 
@@ -100,7 +94,7 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
   const [newInternName, setNewInternName] = useState('');
   const [newDepartment, setNewDepartment] = useState('Engineering');
   const [newTeam, setNewTeam] = useState('Frontend');
-  const [newPeriod, setNewPeriod] = useState('Jul 1 - Dec 31');
+  const [newPeriod] = useState('Jul 1 - Dec 31');
   const [newDailyRate, setNewDailyRate] = useState(400);
   const [newDaysWorked, setNewDaysWorked] = useState(21);
   const [newBankName, setNewBankName] = useState('Kasikorn Bank (KBANK)');
@@ -112,7 +106,7 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
   // Active records pool: combines stored Firestore records with auto-calculated records for registered interns
   const activeRecords = useMemo(() => {
     // 1. Existing stored payroll records for this month in Firestore
-    const storedMonthRecords = payrollRecords.filter((r) => r.monthYear === selectedMonth);
+    const storedMonthRecords = payrollRecords.filter((r) => r.monthYear?.trim().toLowerCase() === selectedMonth.trim().toLowerCase());
     const storedInternIds = new Set(storedMonthRecords.map((r) => r.internId));
 
     // 2. Real registered interns in allUsers who don't have a stored payroll doc yet for this month:
@@ -128,7 +122,7 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
       if (storedInternIds.has(intern.id)) continue;
       // Check real attendance logs for this intern in selectedMonth
       const internLogs = activeAttendanceLogs.filter(
-        (r) => r.internId === intern.id && r.monthYear === selectedMonth
+        (r) => r.internId === intern.id && (r.monthYear?.trim().toLowerCase() === selectedMonth.trim().toLowerCase())
       );
       const uniqueDaysWorked = new Set(internLogs.map((r) => r.date)).size;
       const rate = intern.dailyRateTHB || 400;
@@ -213,7 +207,7 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
 
   // Status toggle handler
   const handleStatusToggle = (rec: PayrollRecord) => {
-    const nextStatus = rec.status === 'Approved' ? 'Pending' : 'Approved';
+    const nextStatus: PayrollRecord['status'] = rec.status === 'Approved' ? 'Pending' : 'Approved';
     const updated = { ...rec, status: nextStatus };
 
     onUpdateRecord?.(updated);
@@ -256,7 +250,7 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
       };
 
     const matchingLogs = activeAttendanceLogs.filter(
-      (l) => l.internId === record.internId && l.monthYear === selectedMonth
+      (l) => l.internId === record.internId && (l.monthYear?.trim().toLowerCase() === selectedMonth.trim().toLowerCase())
     );
 
     setTimecardModalIntern({
@@ -366,47 +360,6 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
     setShowExportModal(false);
     setToastMessage(`Generated Bank Direct Transfer batch file (${filteredRecords.length} payees).`);
     setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // Handle Finalize Payroll Cycle (Internal Audit Trail in Firestore)
-  const handleConfirmFinalizePayroll = async () => {
-    setIsFinalizing(true);
-    try {
-      await finalizePayrollCycle({
-        monthYear: selectedMonth,
-        user,
-        totalInterns: filteredRecords.length,
-        totalDaysWorked,
-        totalAmountTHB: totalPayrollTHB,
-        notes: `Finalized by ${user.name} for offline accounting signature & handoff`,
-      });
-      setShowFinalizeModal(false);
-      setToastMessage(`Payroll cycle for ${selectedMonth} recorded as finalized.`);
-      setTimeout(() => setToastMessage(null), 3500);
-    } catch (err) {
-      console.error('Error finalizing payroll cycle:', err);
-      setToastMessage('Error saving finalization record to Firestore.');
-      setTimeout(() => setToastMessage(null), 4000);
-    } finally {
-      setIsFinalizing(false);
-    }
-  };
-
-  // Handle Unlock Payroll Cycle
-  const handleConfirmUnlockPayroll = async () => {
-    setIsUnlocking(true);
-    try {
-      await unlockPayrollCycle(selectedMonth);
-      setShowUnlockModal(false);
-      setToastMessage(`Payroll cycle for ${selectedMonth} has been unlocked for editing.`);
-      setTimeout(() => setToastMessage(null), 3500);
-    } catch (err) {
-      console.error('Error unlocking payroll cycle:', err);
-      setToastMessage('Error unlocking payroll cycle.');
-      setTimeout(() => setToastMessage(null), 3500);
-    } finally {
-      setIsUnlocking(false);
-    }
   };
 
   // Handle Confirm Submit Payroll
@@ -1374,7 +1327,20 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
                     timecardModalIntern.logs.map((log) => (
                       <tr key={log.id} className="hover:bg-[#f1f3ff]/60">
                         <td className="p-2.5 font-bold text-[#041b3c]">
-                          {log.monthName} {log.date}, 2026
+                          <div>
+                            <span>{log.monthName} {log.date}, 2026</span>
+                            {(log.isManuallyAdded || log.isManuallyEdited) && (
+                              <div className="mt-1">
+                                <AuditBadge
+                                  isManuallyAdded={log.isManuallyAdded}
+                                  isManuallyEdited={log.isManuallyEdited}
+                                  lastEditedBy={log.lastEditedBy}
+                                  auditHistory={log.auditHistory}
+                                  recordId={log.id}
+                                />
+                              </div>
+                            )}
+                          </div>
                         </td>
                         <td className="p-2.5 text-[#585f6a]">{log.dayOfWeek}</td>
                         <td className="p-2.5 font-semibold text-[#041b3c]">

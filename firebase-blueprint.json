@@ -119,6 +119,25 @@
         "notes": { "type": "string" }
       },
       "required": ["id", "monthYear", "finalizedAt", "finalizedByUid", "finalizedByName", "totalInterns", "totalDaysWorked", "totalAmountTHB", "status"]
+    },
+    "AttendanceAuditLog": {
+      "title": "AttendanceAuditLog",
+      "description": "Immutable audit log of administrative check-in additions, modifications, and deletions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recordId": { "type": "string" },
+        "internId": { "type": "string" },
+        "internName": { "type": "string" },
+        "action": { "type": "string", "enum": ["created_by_admin", "edited_by_admin", "deleted_by_admin"] },
+        "adminId": { "type": "string" },
+        "adminName": { "type": "string" },
+        "adminEmail": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "reason": { "type": "string" },
+        "changesSummary": { "type": "string" }
+      },
+      "required": ["id", "recordId", "internId", "action", "adminId", "adminName", "timestamp"]
     }
   },
   "firestore": {
@@ -145,6 +164,10 @@
     "/finalizedPayrollCycles/{cycleId}": {
       "schema": { "$ref": "FinalizedPayrollCycle" },
       "description": "Permanent audit log of finalized payroll months."
+    },
+    "/attendance_audit_logs/{logId}": {
+      "schema": { "$ref": "AttendanceAuditLog" },
+      "description": "Immutable log of admin-managed attendance edits and additions."
     }
   }
 }

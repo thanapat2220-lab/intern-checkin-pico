@@ -2,14 +2,11 @@ import React, { useState, useMemo } from 'react';
 import { UserProfile, ScreenView, AttendanceRecord } from '../types';
 import { ASSET_IMAGES } from '../data/mockData';
 import {
-  createApprovalLink,
-  createLightweightSupervisor,
   createStaffAccount,
   archiveIntern,
   reactivateIntern,
   deleteInternPermanently,
 } from '../services/dbService';
-import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
 import { InternAttendanceFormModal } from './InternAttendanceFormModal';
 
 interface InternsManagementScreenProps {
@@ -57,25 +54,10 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
   const [isAddSupervisorOpen, setIsAddSupervisorOpen] = useState<boolean>(false);
   const [newSupName, setNewSupName] = useState<string>('');
   const [newSupEmail, setNewSupEmail] = useState<string>('');
-  const [newStaffRole, setNewStaffRole] = useState<'supervisor' | 'payroll_admin'>('supervisor');
-  const [newSupDept, setNewSupDept] = useState<string>('Engineering');
-  const [newSupTeam, setNewSupTeam] = useState<string>('General');
+  const [newSupDept, setNewSupDept] = useState<string>('Human Resources / Payroll');
+  const [newSupTeam, setNewSupTeam] = useState<string>('Payroll Management');
   const [isCreatingSup, setIsCreatingSup] = useState<boolean>(false);
   const [supFormError, setSupFormError] = useState<string | null>(null);
-
-  // Magic Link Generation Modal State
-  const [linkModalIntern, setLinkModalIntern] = useState<UserProfile | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<string>(() => formatMonthYear());
-  const [isGeneratingLink, setIsGeneratingLink] = useState<boolean>(false);
-  const [generatedLinkData, setGeneratedLinkData] = useState<{
-    token: string;
-    approvalUrl: string;
-    expiresAt: string;
-  } | null>(null);
-  const [isCopied, setIsCopied] = useState<boolean>(false);
-
-  // Dynamic review month options relative to current date
-  const reviewMonthOptions = useMemo(() => getRecentMonthDropdownOptions(5, 1), []);
 
   // Separate interns into active, archived, and total
   const allInterns = useMemo(() => {
@@ -104,13 +86,12 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
     }, 4000);
   };
 
-  // Add Staff / Supervisor Handlers
+  // Add Payroll Admin Handlers
   const handleOpenAddSupervisor = () => {
     setNewSupName('');
     setNewSupEmail('');
-    setNewStaffRole('supervisor');
-    setNewSupDept('Engineering');
-    setNewSupTeam('General');
+    setNewSupDept('Human Resources / Payroll');
+    setNewSupTeam('Payroll Management');
     setSupFormError(null);
     setIsAddSupervisorOpen(true);
   };
@@ -137,99 +118,18 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
       const created = await createStaffAccount({
         name: newSupName.trim(),
         email: newSupEmail.trim(),
-        role: newStaffRole,
+        role: 'payroll_admin',
         department: newSupDept.trim(),
         team: newSupTeam.trim(),
       });
-      const roleLabel = created.role === 'payroll_admin' ? 'Payroll Admin' : 'Supervisor';
-      showToast(`${roleLabel} "${created.name}" (${created.email}) provisioned successfully.`);
+      showToast(`Payroll Admin "${created.name}" (${created.email}) provisioned successfully.`);
       handleCloseAddSupervisor();
     } catch (err: any) {
-      console.error('Failed to provision staff account:', err);
-      setSupFormError(err.message || 'Failed to provision staff account. Please try again.');
+      console.error('Failed to provision admin account:', err);
+      setSupFormError(err.message || 'Failed to provision admin account. Please try again.');
     } finally {
       setIsCreatingSup(false);
     }
-  };
-
-  // Magic Link Modal Handlers
-  const handleOpenLinkModal = (intern: UserProfile) => {
-    setLinkModalIntern(intern);
-    setSelectedMonth(formatMonthYear());
-    setGeneratedLinkData(null);
-    setIsCopied(false);
-  };
-
-  const handleCloseLinkModal = () => {
-    setLinkModalIntern(null);
-    setGeneratedLinkData(null);
-    setIsCopied(false);
-  };
-
-  const handleGenerateLink = async () => {
-    if (!linkModalIntern) return;
-
-    try {
-      setIsGeneratingLink(true);
-      const assignedSup = supervisors.find((s) => s.id === linkModalIntern.supervisorId);
-
-      const res = await createApprovalLink({
-        internId: linkModalIntern.id,
-        internName: linkModalIntern.name,
-        month: selectedMonth,
-        supervisorId: linkModalIntern.supervisorId || null,
-        supervisorName: assignedSup ? assignedSup.name : (linkModalIntern.supervisorName || null),
-        supervisorEmail: assignedSup ? assignedSup.email : null,
-      });
-
-      setGeneratedLinkData({
-        token: res.token,
-        approvalUrl: res.approvalUrl,
-        expiresAt: res.linkDoc.expiresAt,
-      });
-      showToast(`Magic approval link generated for ${linkModalIntern.name} (${selectedMonth})`);
-    } catch (err) {
-      console.error('Error generating approval link:', err);
-      showToast('Failed to generate approval link. Please try again.');
-    } finally {
-      setIsGeneratingLink(false);
-    }
-  };
-
-  const handleCopyLink = async () => {
-    if (!generatedLinkData) return;
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(generatedLinkData.approvalUrl);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = generatedLinkData.approvalUrl;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      setIsCopied(true);
-      showToast('Approval link copied to clipboard!');
-      setTimeout(() => setIsCopied(false), 3000);
-    } catch (err) {
-      console.error('Copy error:', err);
-      showToast('Unable to copy automatically. Please copy the link manually.');
-    }
-  };
-
-  const getMailtoUrl = () => {
-    if (!linkModalIntern || !generatedLinkData) return '#';
-    const assignedSup = supervisors.find((s) => s.id === linkModalIntern.supervisorId);
-    const toEmail = assignedSup?.email || '';
-    const subject = encodeURIComponent(`Please review ${linkModalIntern.name}'s attendance - ${selectedMonth}`);
-    const body = encodeURIComponent(
-      `Hello ${assignedSup?.name || 'Supervisor'},\n\n` +
-      `Please review and approve ${linkModalIntern.name}'s attendance record for ${selectedMonth} using the secure one-click link below (no login required, valid for 14 days):\n\n` +
-      `${generatedLinkData.approvalUrl}\n\n` +
-      `Thank you,\nHR & Payroll Team`
-    );
-    return `mailto:${toEmail}?subject=${subject}&body=${body}`;
   };
 
   // Filtered interns
@@ -400,13 +300,6 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
               >
                 <span className="material-symbols-outlined text-[16px]">payments</span>
                 <span>Payroll Export</span>
-              </button>
-              <button
-                onClick={() => onSwitchScreen('supervisor_portal')}
-                className="text-xs font-semibold px-3 py-1.5 rounded-md text-[#585f6a] hover:text-[#003d9b] hover:bg-[#f1f3ff] transition-colors flex items-center gap-1.5 cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[16px]">supervisor_account</span>
-                <span>Supervisor Portal</span>
               </button>
             </div>
           </div>
@@ -866,17 +759,6 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                               </button>
                             )}
 
-                            {/* Magic Link */}
-                            <button
-                              type="button"
-                              onClick={() => handleOpenLinkModal(intern)}
-                              title="Generate Magic Approval Link"
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#e0e8ff] text-[#003d9b] hover:bg-[#003d9b] hover:text-white transition-all shadow-xs cursor-pointer"
-                            >
-                              <span className="material-symbols-outlined text-[15px]">send_time_extension</span>
-                              <span>Link</span>
-                            </button>
-
                             {/* Print Form */}
                             <button
                               type="button"
@@ -923,9 +805,9 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   <span className="material-symbols-outlined text-[20px]">admin_panel_settings</span>
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-[#041b3c]">Provision Staff Account</h3>
+                  <h3 className="text-base font-bold text-[#041b3c]">Provision Payroll Admin Account</h3>
                   <p className="text-[11px] text-[#585f6a]">
-                    Securely provision Supervisor or Payroll Admin accounts from inside the admin panel
+                    Securely provision Payroll Admin accounts with full administrative and payout verification access
                   </p>
                 </div>
               </div>
@@ -946,7 +828,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   security
                 </span>
                 <p className="text-[11px] text-[#041b3c] leading-relaxed">
-                  <strong>Controlled Staff Provisioning:</strong> Public registration is strictly restricted to Intern accounts. Only existing Payroll Admins can provision supervisor or administrative access here. When the user logs in or registers via Firebase Auth with this email, their account will automatically link with this role.
+                  <strong>Controlled Admin Provisioning:</strong> Public registration is strictly restricted to Intern accounts. Only existing Payroll Admins can provision administrative access here. When the user logs in or registers via Firebase Auth with this email, their account will automatically link with the Payroll Admin role.
                 </p>
               </div>
 
@@ -957,58 +839,16 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                 </div>
               )}
 
-              {/* Role Selection */}
-              <div>
-                <label className="block text-xs font-bold text-[#041b3c] mb-1.5">
-                  Account Role <span className="text-[#ba1a1a]">*</span>
-                </label>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => setNewStaffRole('supervisor')}
-                    className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
-                      newStaffRole === 'supervisor'
-                        ? 'bg-[#e0e8ff] border-[#003d9b] ring-1 ring-[#003d9b]'
-                        : 'bg-white border-[#c3c6d6] hover:bg-[#f9f9ff]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-[#041b3c] flex items-center gap-1.5">
-                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">supervisor_account</span>
-                        Supervisor
-                      </span>
-                      {newStaffRole === 'supervisor' && (
-                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">check_circle</span>
-                      )}
-                    </div>
-                    <span className="text-[10px] text-[#585f6a] leading-snug">
-                      Reviews & approves assigned intern timesheets and magic links.
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setNewStaffRole('payroll_admin')}
-                    className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
-                      newStaffRole === 'payroll_admin'
-                        ? 'bg-[#e0e8ff] border-[#003d9b] ring-1 ring-[#003d9b]'
-                        : 'bg-white border-[#c3c6d6] hover:bg-[#f9f9ff]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-[#041b3c] flex items-center gap-1.5">
-                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">shield</span>
-                        Payroll Admin
-                      </span>
-                      {newStaffRole === 'payroll_admin' && (
-                        <span className="material-symbols-outlined text-[16px] text-[#003d9b]">check_circle</span>
-                      )}
-                    </div>
-                    <span className="text-[10px] text-[#585f6a] leading-snug">
-                      Full administrative access, staff provisioning, and payroll disbursals.
-                    </span>
-                  </button>
+              {/* Account Role Confirmation */}
+              <div className="p-3 rounded-xl border border-[#003d9b] bg-[#e0e8ff]/60 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-[#003d9b]">shield</span>
+                  <div>
+                    <span className="text-xs font-bold text-[#041b3c] block">Payroll Admin</span>
+                    <span className="text-[10px] text-[#585f6a]">Sole administrator with full rights to verify physical paper attendance and approve payouts.</span>
+                  </div>
                 </div>
+                <span className="material-symbols-outlined text-[16px] text-[#003d9b]">check_circle</span>
               </div>
 
               {/* Full Name */}
@@ -1019,7 +859,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                 <input
                   type="text"
                   required
-                  placeholder="Enter staff full name"
+                  placeholder="Enter administrator full name"
                   value={newSupName}
                   onChange={(e) => setNewSupName(e.target.value)}
                   className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
@@ -1034,7 +874,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                 <input
                   type="email"
                   required
-                  placeholder="e.g. staff.member@company.com"
+                  placeholder="e.g. admin.payroll@company.com"
                   value={newSupEmail}
                   onChange={(e) => setNewSupEmail(e.target.value)}
                   className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
@@ -1052,7 +892,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   </label>
                   <input
                     type="text"
-                    placeholder={newStaffRole === 'payroll_admin' ? 'e.g. Finance & Payroll' : 'e.g. Engineering'}
+                    placeholder="e.g. Human Resources / Payroll"
                     value={newSupDept}
                     onChange={(e) => setNewSupDept(e.target.value)}
                     className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
@@ -1065,7 +905,7 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. General"
+                    placeholder="e.g. Payroll Management"
                     value={newSupTeam}
                     onChange={(e) => setNewSupTeam(e.target.value)}
                     className="w-full bg-[#f9f9ff] border border-[#c3c6d6] rounded-xl px-3.5 py-2.5 text-xs text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none"
@@ -1096,198 +936,12 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
                   ) : (
                     <>
                       <span className="material-symbols-outlined text-[16px]">check</span>
-                      <span>Provision {newStaffRole === 'payroll_admin' ? 'Payroll Admin' : 'Supervisor'}</span>
+                      <span>Provision Payroll Admin</span>
                     </>
                   )}
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Magic Link Modal */}
-      {linkModalIntern && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-lg w-full flex flex-col shadow-2xl border border-[#c3c6d6] overflow-hidden">
-            {/* Modal Header */}
-            <div className="p-5 border-b border-[#c3c6d6] flex justify-between items-center bg-[#f1f3ff]">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-[#003d9b] text-white flex items-center justify-center font-bold shadow-xs">
-                  <span className="material-symbols-outlined text-[22px]">link</span>
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-[#041b3c]">Generate Magic Approval Link</h3>
-                  <p className="text-xs text-[#585f6a]">
-                    For <strong className="text-[#041b3c]">{linkModalIntern.name}</strong> • No supervisor login required
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleCloseLinkModal}
-                className="p-1.5 rounded-full hover:bg-[#e0e8ff] text-[#737685] hover:text-[#041b3c] transition-colors cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[20px]">close</span>
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-6 space-y-4">
-              {/* Target Supervisor Info */}
-              <div className="p-3.5 bg-[#fbfbfe] rounded-xl border border-[#c3c6d6] text-xs">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[#585f6a] block mb-1">
-                  Recipient Supervisor
-                </span>
-                {linkModalIntern.supervisorId ? (
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-bold text-[#041b3c]">
-                        {supervisors.find((s) => s.id === linkModalIntern.supervisorId)?.name || linkModalIntern.supervisorName}
-                      </p>
-                      <p className="text-[11px] text-[#585f6a]">
-                        {supervisors.find((s) => s.id === linkModalIntern.supervisorId)?.email || 'No email configured'}
-                      </p>
-                    </div>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#10B981]/15 text-[#047857]">
-                      Assigned
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between text-[#b45309]">
-                    <span>⚠️ No supervisor currently assigned to this intern.</span>
-                    <span className="text-[10px] font-semibold underline">You can still generate a universal link</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Month Selection */}
-              <div>
-                <label className="block text-xs font-bold text-[#041b3c] mb-1.5">
-                  Select Attendance Review Month
-                </label>
-                <select
-                  value={selectedMonth}
-                  onChange={(e) => {
-                    setSelectedMonth(e.target.value);
-                    setGeneratedLinkData(null); // Reset when month changes
-                  }}
-                  className="w-full appearance-none bg-white border border-[#c3c6d6] rounded-lg py-2.5 px-3 text-xs font-semibold text-[#041b3c] focus:border-[#003d9b] focus:ring-1 focus:ring-[#003d9b] outline-none cursor-pointer shadow-xs"
-                >
-                  {reviewMonthOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Generate Action Button */}
-              {!generatedLinkData ? (
-                <button
-                  type="button"
-                  onClick={handleGenerateLink}
-                  disabled={isGeneratingLink}
-                  className={`w-full py-2.5 bg-[#003d9b] text-white rounded-xl text-xs font-bold hover:bg-[#0052cc] shadow-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                    isGeneratingLink ? 'opacity-60 cursor-wait' : ''
-                  }`}
-                >
-                  {isGeneratingLink ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>Generating Secure Token...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="material-symbols-outlined text-[18px]">key</span>
-                      <span>Generate Approval Link for {selectedMonth}</span>
-                    </>
-                  )}
-                </button>
-              ) : (
-                /* Generated URL Box & Actions */
-                <div className="space-y-3 animate-fade-in pt-1">
-                  <div>
-                    <label className="block text-[11px] font-bold text-[#041b3c] mb-1">
-                      One-Click Public Approval URL
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={generatedLinkData.approvalUrl}
-                        className="flex-1 bg-[#f9f9ff] border border-[#c3c6d6] rounded-lg py-2 px-3 text-[11px] font-mono text-[#041b3c] select-all outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleCopyLink}
-                        className={`px-3 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1 shrink-0 cursor-pointer shadow-xs ${
-                          isCopied
-                            ? 'bg-[#10B981] text-white'
-                            : 'bg-[#003d9b] text-white hover:bg-[#0052cc]'
-                        }`}
-                      >
-                        <span className="material-symbols-outlined text-[16px]">
-                          {isCopied ? 'check' : 'content_copy'}
-                        </span>
-                        <span>{isCopied ? 'Copied' : 'Copy'}</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Expiration and Email action */}
-                  <div className="flex items-center justify-between text-[11px] text-[#585f6a] bg-[#fbfbfe] p-3 rounded-xl border border-[#c3c6d6]">
-                    <div className="flex items-center gap-1.5">
-                      <span className="material-symbols-outlined text-[16px] text-[#10B981]">schedule</span>
-                      <span>
-                        Valid for 14 days (Expires:{' '}
-                        <strong>
-                          {new Date(generatedLinkData.expiresAt).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                          })}
-                        </strong>
-                        )
-                      </span>
-                    </div>
-
-                    <a
-                      href={getMailtoUrl()}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#10B981] text-white hover:bg-[#059669] transition-all shadow-xs cursor-pointer"
-                    >
-                      <span className="material-symbols-outlined text-[15px]">mail</span>
-                      <span>Send via Email</span>
-                    </a>
-                  </div>
-
-                  {/* Direct Test Preview Button */}
-                  <div className="pt-1">
-                    <a
-                      href={generatedLinkData.approvalUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="w-full py-2 bg-[#f1f3ff] hover:bg-[#e0e8ff] text-[#003d9b] border border-[#c3c6d6] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                      <span>Open Approval Page (Test View)</span>
-                    </a>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-4 border-t border-[#c3c6d6] bg-[#f9f9ff] flex justify-end">
-              <button
-                type="button"
-                onClick={handleCloseLinkModal}
-                className="px-4 py-2 border border-[#c3c6d6] text-[#585f6a] rounded-lg text-xs font-semibold hover:bg-[#e0e8ff] transition-colors cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
           </div>
         </div>
       )}

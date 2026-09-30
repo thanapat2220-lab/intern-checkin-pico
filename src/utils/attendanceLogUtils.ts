@@ -51,14 +51,8 @@ export function computeTimestamp(
   let month = new Date().getMonth();
   let day = record.date || 1;
 
-  if (record.createdAt) {
-    const d = new Date(record.createdAt);
-    if (!isNaN(d.getTime())) {
-      year = d.getFullYear();
-      month = d.getMonth();
-      day = d.getDate();
-    }
-  } else if (record.monthYear) {
+  // 1. Resolve month & year from monthYear string (e.g. "September 2026")
+  if (record.monthYear) {
     const parts = record.monthYear.trim().split(' ');
     if (parts.length >= 2) {
       const mName = parts[0].toLowerCase();
@@ -69,6 +63,22 @@ export function computeTimestamp(
       if (!isNaN(yNum) && yNum > 2000) {
         year = yNum;
       }
+    }
+  } else if (record.createdAt) {
+    const d = new Date(record.createdAt);
+    if (!isNaN(d.getTime())) {
+      year = d.getFullYear();
+      month = d.getMonth();
+    }
+  }
+
+  // 2. Resolve day: if record.date is explicitly set, use it; otherwise fallback to createdAt date
+  if (record.date) {
+    day = record.date;
+  } else if (record.createdAt) {
+    const d = new Date(record.createdAt);
+    if (!isNaN(d.getTime())) {
+      day = d.getDate();
     }
   }
 
@@ -131,11 +141,12 @@ export function calculateDurationStr(checkInTime: string, checkOutTime?: string 
  * This works well for event/exhibition work where finish times vary and can go late
  * into the night, so we don't use a fixed cutoff hour.
  */
-export function isMissingCheckout(record: AttendanceRecord, now: Date = new Date()): boolean {
+export function isMissingCheckout(record: AttendanceRecord, nowInput?: Date | number): boolean {
   if (record.status === 'missing_checkout') return true;
   if (!record.checkInTime) return false;
   if (record.checkOutTime) return false;
 
+  const now = nowInput instanceof Date ? nowInput : new Date();
   const pad = (n: number) => n.toString().padStart(2, '0');
   const nowYear = now.getFullYear();
   const nowMonth = pad(now.getMonth() + 1);
@@ -209,7 +220,6 @@ export function buildRawAttendanceLogEntries(
 
       // Determine Status using missing check-out detection rule
       const isToday = dateStr === todayDateStr;
-      const isPastDay = dateStr < todayDateStr;
       const missingCheckout = isMissingCheckout(rec, today);
 
       let status: 'completed' | 'active' | 'missing_checkout' = 'completed';
@@ -307,6 +317,10 @@ export function buildRawAttendanceLogEntries(
         checkOutNote: rec.checkOutNote,
         notes: getMergedRecordNotes(rec),
         monthYear: rec.monthYear || 'Current Cycle',
+        isManuallyAdded: rec.isManuallyAdded,
+        isManuallyEdited: rec.isManuallyEdited,
+        lastEditedBy: rec.lastEditedBy,
+        auditHistory: rec.auditHistory,
       });
     });
   });
@@ -335,6 +349,8 @@ export function exportAttendanceLogsToCSV(
     'Total Duration',
     'Location Type',
     'Notes',
+    'Admin Correction Status',
+    'Admin Edit Reason',
     'Irregularity Flag',
     'Irregularity Note',
     'Cycle Month',
@@ -347,22 +363,36 @@ export function exportAttendanceLogsToCSV(
     return `"${s}"`;
   };
 
-  const rows = entries.map((e) => [
-    escapeCSV(e.internName),
-    escapeCSV(e.internDepartment),
-    escapeCSV(e.dateStr),
-    escapeCSV(e.dayOfWeek),
-    escapeCSV(e.checkInTime),
-    escapeCSV(e.checkOutTime || (e.status === 'active' ? 'Active Shift' : 'MISSING CHECK-OUT')),
-    escapeCSV(e.status.toUpperCase()),
-    escapeCSV(e.duration || ''),
-    escapeCSV(e.locationType.toUpperCase()),
-    escapeCSV(e.notes || ''),
-    escapeCSV(e.isIrregular ? 'FLAGGED' : 'NORMAL'),
-    escapeCSV(e.irregularityReason || ''),
-    escapeCSV(e.monthYear),
-    escapeCSV(e.internId),
-  ]);
+  const rows = entries.map((e) => {
+    let adminStatus = 'Original Intern Entry';
+    let adminReason = '';
+    if (e.isManuallyAdded) {
+      adminStatus = `Added by Admin (${e.lastEditedBy?.adminName || 'Admin'})`;
+      adminReason = e.lastEditedBy?.reason || 'Manually added by admin';
+    } else if (e.isManuallyEdited) {
+      adminStatus = `Edited by Admin (${e.lastEditedBy?.adminName || 'Admin'})`;
+      adminReason = e.lastEditedBy?.reason || e.lastEditedBy?.summary || 'Manually edited by admin';
+    }
+
+    return [
+      escapeCSV(e.internName),
+      escapeCSV(e.internDepartment),
+      escapeCSV(e.dateStr),
+      escapeCSV(e.dayOfWeek),
+      escapeCSV(e.checkInTime),
+      escapeCSV(e.checkOutTime || (e.status === 'active' ? 'Active Shift' : 'MISSING CHECK-OUT')),
+      escapeCSV(e.status.toUpperCase()),
+      escapeCSV(e.duration || ''),
+      escapeCSV(e.locationType.toUpperCase()),
+      escapeCSV(e.notes || ''),
+      escapeCSV(adminStatus),
+      escapeCSV(adminReason),
+      escapeCSV(e.isIrregular ? 'FLAGGED' : 'NORMAL'),
+      escapeCSV(e.irregularityReason || ''),
+      escapeCSV(e.monthYear),
+      escapeCSV(e.internId),
+    ];
+  });
 
   const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });

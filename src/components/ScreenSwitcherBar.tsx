@@ -33,20 +33,10 @@ export const ScreenSwitcherBar: React.FC<ScreenSwitcherBarProps> = ({
       ];
     }
 
-    if (currentUser.role === 'supervisor') {
-      return [
-        { id: 'supervisor_portal', label: 'Supervisor Portal', icon: 'supervisor_account', badge: 'Approvals' },
-        { id: 'attendance_logs', label: 'Attendance Log', icon: 'list_alt', badge: 'Raw Log' },
-        { id: 'admin_interns', label: 'Interns Directory', icon: 'manage_accounts', badge: 'Directory' },
-        { id: 'intern_checkin', label: 'Check-in View', icon: 'fingerprint', badge: 'Preview' },
-      ];
-    }
-
     return [
       { id: 'payroll_admin', label: 'Payroll Export', icon: 'payments', badge: 'Finance' },
       { id: 'attendance_logs', label: 'Attendance Log', icon: 'list_alt', badge: 'Overview' },
       { id: 'admin_interns', label: 'Interns Directory', icon: 'manage_accounts', badge: 'Directory' },
-      { id: 'supervisor_portal', label: 'Supervisor Portal', icon: 'supervisor_account', badge: 'Portal' },
       { id: 'intern_checkin', label: 'Check-in View', icon: 'fingerprint', badge: 'Intern' },
     ];
   };

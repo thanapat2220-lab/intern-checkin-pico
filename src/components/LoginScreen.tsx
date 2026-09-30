@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UserProfile, UserRole } from '../types';
+import { UserProfile } from '../types';
 import { loginWithEmail, registerNewUser } from '../services/authService';
 
 interface LoginScreenProps {
@@ -280,7 +280,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               <div className="flex items-center gap-2 px-3 py-2 bg-[#f1f3ff] rounded-lg border border-[#c3c6d6]/60 text-[11px] text-[#585f6a]">
                 <span className="material-symbols-outlined text-[16px] text-[#003d9b] shrink-0">lock</span>
                 <span>
-                  Public registration provisions verified Intern accounts only. Supervisor and Payroll Admin accounts are provisioned internally by management.
+                  Public registration provisions verified Intern accounts only. Payroll Admin accounts are provisioned internally by management.
                 </span>
               </div>
             )}

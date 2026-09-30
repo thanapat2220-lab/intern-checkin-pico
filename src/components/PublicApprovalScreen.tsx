@@ -165,8 +165,15 @@ export const PublicApprovalScreen: React.FC<PublicApprovalScreenProps> = ({
   };
 
   const records = review?.records || [];
-  const officeCount = review?.officeDaysCount ?? records.filter((r) => r.locationType === 'office').length;
-  const outsideCount = review?.outsideDaysCount ?? records.filter((r) => r.locationType === 'outside').length;
+  const officeCount = records.length > 0
+    ? records.filter((r) => r.locationType === 'office').length
+    : (review?.officeDaysCount ?? 0);
+  const outsideCount = records.length > 0
+    ? records.filter((r) => r.locationType === 'outside').length
+    : (review?.outsideDaysCount ?? 0);
+  const totalDays = records.length > 0
+    ? officeCount + outsideCount
+    : (review?.daysLogged ?? (officeCount + outsideCount));
 
   return (
     <div className="min-h-screen bg-[#F4F5F7] text-[#041b3c] font-sans antialiased flex flex-col">
@@ -335,7 +342,7 @@ export const PublicApprovalScreen: React.FC<PublicApprovalScreenProps> = ({
               <div className="grid grid-cols-3 gap-3">
                 <div className="bg-white border border-[#c3c6d6] p-4 rounded-xl text-center shadow-xs">
                   <span className="text-[11px] font-bold text-[#585f6a] uppercase block">Total Days</span>
-                  <span className="text-2xl font-black text-[#041b3c] mt-0.5 block">{review.daysLogged || records.length}</span>
+                  <span className="text-2xl font-black text-[#041b3c] mt-0.5 block">{totalDays}</span>
                 </div>
                 <div className="bg-white border border-[#c3c6d6] p-4 rounded-xl text-center shadow-xs">
                   <span className="text-[11px] font-bold text-[#585f6a] uppercase block">Office Days</span>

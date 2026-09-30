@@ -11,8 +11,20 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { AttendanceRecord, InternMonthlyReview, PayrollRecord, UserProfile, ApprovalLink, UserRole, FinalizedPayrollCycle } from '../types';
+import {
+  AttendanceRecord,
+  InternMonthlyReview,
+  PayrollRecord,
+  UserProfile,
+  ApprovalLink,
+  UserRole,
+  FinalizedPayrollCycle,
+  AttendanceAuditLog,
+  LocationType,
+} from '../types';
 import { formatMergedNotes } from '../utils/noteUtils';
+import { formatMonthYear, formatShortMonth } from '../utils/dateUtils';
+import { calculateDurationStr } from '../utils/attendanceLogUtils';
 
 const ATTENDANCE_COLLECTION = 'attendance';
 const REVIEWS_COLLECTION = 'monthlyReviews';
@@ -20,6 +32,7 @@ const PAYROLL_COLLECTION = 'payroll';
 const USERS_COLLECTION = 'users';
 const APPROVAL_LINKS_COLLECTION = 'approvalLinks';
 const FINALIZED_CYCLES_COLLECTION = 'finalizedPayrollCycles';
+const ATTENDANCE_AUDIT_COLLECTION = 'attendance_audit_logs';
 
 const KNOWN_MOCK_ATTENDANCE_IDS = [
   'att-1',
@@ -833,17 +846,241 @@ export async function addPayrollRecordInFirestore(record: PayrollRecord): Promis
 export async function updatePayrollRecordInFirestore(record: PayrollRecord): Promise<void> {
   try {
     const docRef = doc(db, PAYROLL_COLLECTION, record.id);
-    await updateDoc(docRef, {
-      ...record,
-      updatedAt: new Date().toISOString(),
-    });
+    const nowIso = new Date().toISOString();
+    await setDoc(
+      docRef,
+      {
+        ...record,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+
+    // Also sync the monthly_reviews collection so the intern's view & attendance log show matching status
+    try {
+      const revSnap = await getDocs(
+        query(
+          collection(db, REVIEWS_COLLECTION),
+          where('internId', '==', record.internId)
+        )
+      );
+      const matchingRev = revSnap.docs.find(
+        (d) => (d.data().monthYear || '').trim().toLowerCase() === (record.monthYear || '').trim().toLowerCase()
+      );
+      const targetRevStatus = record.status === 'Approved' ? 'approved' : 'pending';
+      if (matchingRev) {
+        await updateDoc(doc(db, REVIEWS_COLLECTION, matchingRev.id), {
+          status: targetRevStatus,
+          approvedAt: record.status === 'Approved' ? (record.approvedAt || nowIso) : null,
+          approvedBy: record.status === 'Approved' ? (record.approvedBy || 'Payroll Admin') : null,
+          approvalMethod: 'manual_paper_signature',
+          updatedAt: nowIso,
+        });
+      }
+    } catch (syncErr) {
+      console.warn('Notice syncing monthly review from payroll record:', syncErr);
+    }
   } catch (err) {
     console.error('Error updating payroll record:', err);
     throw err;
   }
 }
 
-// ---------------- MAGIC LINK APPROVALS ---------------- //
+// ---------------- NEW MANUAL / PAPER-BASED ADMIN APPROVAL WORKFLOW ---------------- //
+
+/**
+ * Approve an intern's monthly attendance after verifying their physically signed
+ * Pico Attendance Form. This grants sole approval authority to the Payroll Admin,
+ * syncing both the payroll record and the monthly review.
+ */
+export async function adminApproveInternMonth(
+  internId: string,
+  monthYear: string,
+  adminUser?: { id?: string; name?: string; email?: string }
+): Promise<void> {
+  try {
+    const nowIso = new Date().toISOString();
+    const adminName = adminUser?.name || 'Payroll Admin';
+
+    // 1. Update or create PayrollRecord in PAYROLL_COLLECTION
+    const paySnap = await getDocs(
+      query(
+        collection(db, PAYROLL_COLLECTION),
+        where('internId', '==', internId)
+      )
+    );
+
+    const matchingPay = paySnap.docs.find(
+      (d) => (d.data().monthYear || '').trim().toLowerCase() === monthYear.trim().toLowerCase()
+    );
+
+    if (matchingPay) {
+      await updateDoc(doc(db, PAYROLL_COLLECTION, matchingPay.id), {
+        status: 'Approved',
+        approvedAt: nowIso,
+        approvedBy: adminName,
+        approvalMethod: 'manual_paper_signature',
+        updatedAt: nowIso,
+      });
+    } else {
+      // Build a payroll record dynamically from attendance records
+      const attSnap = await getDocs(
+        query(
+          collection(db, ATTENDANCE_COLLECTION),
+          where('internId', '==', internId)
+        )
+      );
+
+      const monthLogs = attSnap.docs
+        .map((d) => d.data() as AttendanceRecord)
+        .filter(
+          (r) =>
+            !r.isDeleted &&
+            (r.monthYear || '').trim().toLowerCase() === monthYear.trim().toLowerCase()
+        );
+
+      const uniqueDays = new Set(monthLogs.map((r) => r.date)).size;
+      const daysWorked = uniqueDays;
+      const dailyRate = 400;
+      const totalAmountTHB = daysWorked * dailyRate;
+
+      // Fetch user profile for metadata
+      const userDoc = await getDoc(doc(db, USERS_COLLECTION, internId));
+      const userData = userDoc.exists() ? (userDoc.data() as UserProfile) : null;
+
+      const newPayId = `pay-${internId}-${monthYear.replace(/\s+/g, '-').toLowerCase()}`;
+      await setDoc(doc(db, PAYROLL_COLLECTION, newPayId), {
+        id: newPayId,
+        internId,
+        name: userData?.name || 'Intern',
+        department: userData?.department || 'General',
+        supervisorId: userData?.supervisorId || null,
+        supervisorName: userData?.supervisorName || null,
+        bankName: userData?.bankName || 'Kasikorn Bank (KBANK)',
+        accountNumber: userData?.accountNumber || '',
+        daysWorked,
+        dailyRateTHB: dailyRate,
+        totalAmountTHB,
+        status: 'Approved',
+        monthYear,
+        approvedAt: nowIso,
+        approvedBy: adminName,
+        approvalMethod: 'manual_paper_signature',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+
+    // 2. Update or create the monthly_reviews doc so the intern sees "Approved"
+    const revSnap = await getDocs(
+      query(
+        collection(db, REVIEWS_COLLECTION),
+        where('internId', '==', internId)
+      )
+    );
+
+    const matchingRev = revSnap.docs.find(
+      (d) => (d.data().monthYear || '').trim().toLowerCase() === monthYear.trim().toLowerCase()
+    );
+
+    if (matchingRev) {
+      await updateDoc(doc(db, REVIEWS_COLLECTION, matchingRev.id), {
+        status: 'approved',
+        approvedAt: nowIso,
+        approvedBy: adminName,
+        approvalMethod: 'manual_paper_signature',
+        paperSignatureVerified: true,
+        updatedAt: nowIso,
+      });
+    } else {
+      const userDoc = await getDoc(doc(db, USERS_COLLECTION, internId));
+      const userData = userDoc.exists() ? (userDoc.data() as UserProfile) : null;
+      const newRevId = `rev-${internId}-${monthYear.replace(/\s+/g, '-').toLowerCase()}`;
+      await setDoc(doc(db, REVIEWS_COLLECTION, newRevId), {
+        id: newRevId,
+        internId,
+        internName: userData?.name || 'Intern',
+        department: userData?.department || 'General',
+        monthYear,
+        status: 'approved',
+        approvedAt: nowIso,
+        approvedBy: adminName,
+        approvalMethod: 'manual_paper_signature',
+        paperSignatureVerified: true,
+        supervisorId: userData?.supervisorId || null,
+        supervisorName: userData?.supervisorName || null,
+        totalShifts: 0,
+        totalHours: 0,
+        missingCheckoutsCount: 0,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+  } catch (err) {
+    console.error('Error approving intern month by admin:', err);
+    throw err;
+  }
+}
+
+/**
+ * Revert an intern's monthly approval status back to Pending.
+ */
+export async function adminRevokeInternMonthApproval(
+  internId: string,
+  monthYear: string
+): Promise<void> {
+  try {
+    const nowIso = new Date().toISOString();
+    const paySnap = await getDocs(
+      query(collection(db, PAYROLL_COLLECTION), where('internId', '==', internId))
+    );
+    const matchingPay = paySnap.docs.find(
+      (d) => (d.data().monthYear || '').trim().toLowerCase() === monthYear.trim().toLowerCase()
+    );
+    if (matchingPay) {
+      await updateDoc(doc(db, PAYROLL_COLLECTION, matchingPay.id), {
+        status: 'Pending',
+        approvedAt: null,
+        approvedBy: null,
+        updatedAt: nowIso,
+      });
+    }
+
+    const revSnap = await getDocs(
+      query(collection(db, REVIEWS_COLLECTION), where('internId', '==', internId))
+    );
+    const matchingRev = revSnap.docs.find(
+      (d) => (d.data().monthYear || '').trim().toLowerCase() === monthYear.trim().toLowerCase()
+    );
+    if (matchingRev) {
+      await updateDoc(doc(db, REVIEWS_COLLECTION, matchingRev.id), {
+        status: 'pending',
+        approvedAt: null,
+        approvedBy: null,
+        paperSignatureVerified: false,
+        updatedAt: nowIso,
+      });
+    }
+  } catch (err) {
+    console.error('Error revoking intern month approval:', err);
+    throw err;
+  }
+}
+
+/**
+ * Batch approve multiple interns for a given month
+ */
+export async function adminApproveAllInternsForMonth(
+  internIds: string[],
+  monthYear: string,
+  adminUser?: { id?: string; name?: string }
+): Promise<void> {
+  for (const id of internIds) {
+    await adminApproveInternMonth(id, monthYear, adminUser);
+  }
+}
+
+// ---------------- RETIRED MAGIC LINK APPROVALS (LEGACY STUBS) ---------------- //
 
 export function generateSecureApprovalToken(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -1055,5 +1292,426 @@ export async function unlockPayrollCycle(monthYear: string): Promise<void> {
   const docId = getCycleDocId(monthYear);
   const docRef = doc(db, FINALIZED_CYCLES_COLLECTION, docId);
   await deleteDoc(docRef);
+}
+
+// ---------------- ADMIN ATTENDANCE CORRECTIONS & AUDIT TRAIL ---------------- //
+
+/**
+ * Sync monthly review and payroll documents after an attendance record
+ * is created, updated, or deleted by an admin.
+ */
+export async function syncAggregatesAfterAttendanceChange(
+  internId: string,
+  monthYear: string
+): Promise<void> {
+  try {
+    // 1. Fetch all current attendance records for this intern
+    const attSnap = await getDocs(
+      query(collection(db, ATTENDANCE_COLLECTION), where('internId', '==', internId))
+    );
+    const allRecords: AttendanceRecord[] = [];
+    attSnap.forEach((d) => allRecords.push(d.data() as AttendanceRecord));
+
+    // Sort descending by date
+    allRecords.sort((a, b) => b.date - a.date);
+
+    // Records matching this specific monthYear
+    const normMonth = monthYear.trim().toLowerCase();
+    const monthRecords = allRecords.filter(
+      (r) => r.monthYear && r.monthYear.trim().toLowerCase() === normMonth
+    );
+    const officeCount = monthRecords.filter((r) => r.locationType === 'office').length;
+    const outsideCount = monthRecords.filter((r) => r.locationType === 'outside').length;
+
+    // 2. Update monthly review document if it exists or create one
+    const revRef = doc(db, REVIEWS_COLLECTION, `rev-${internId}`);
+    const revSnap = await getDoc(revRef);
+
+    if (revSnap.exists()) {
+      await updateDoc(revRef, {
+        records: monthRecords,
+        daysLogged: monthRecords.length,
+        officeDaysCount: officeCount,
+        outsideDaysCount: outsideCount,
+        updatedAt: new Date().toISOString(),
+      });
+    } else if (monthRecords.length > 0) {
+      const userRef = doc(db, USERS_COLLECTION, internId);
+      const userSnap = await getDoc(userRef);
+      const userData = userSnap.exists() ? (userSnap.data() as UserProfile) : null;
+
+      const newReview: InternMonthlyReview = {
+        id: `rev-${internId}`,
+        internId,
+        name: userData?.name || 'Intern',
+        initials: userData?.initials || 'IN',
+        department: userData?.department || 'Engineering',
+        avatarUrl: userData?.avatarUrl,
+        monthYear,
+        daysLogged: monthRecords.length,
+        officeDaysCount: officeCount,
+        outsideDaysCount: outsideCount,
+        status: 'pending',
+        records: monthRecords,
+        supervisorId: userData?.supervisorId || null,
+        supervisorName: userData?.supervisorName || null,
+      };
+      await setDoc(revRef, { ...newReview, createdAt: new Date().toISOString() });
+    }
+
+    // 3. Update any stored payroll documents for this intern and month
+    const paySnap = await getDocs(
+      query(
+        collection(db, PAYROLL_COLLECTION),
+        where('internId', '==', internId)
+      )
+    );
+    const uniqueDaysWorked = new Set(monthRecords.map((r) => r.date)).size;
+
+    for (const d of paySnap.docs) {
+      const payData = d.data() as PayrollRecord;
+      if (payData.monthYear && payData.monthYear.trim().toLowerCase() === normMonth) {
+        const rate = payData.dailyRateTHB || 400;
+        await updateDoc(d.ref, {
+          daysWorked: uniqueDaysWorked,
+          totalAmountTHB: uniqueDaysWorked * rate,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Error syncing aggregates after attendance change:', err);
+  }
+}
+
+/**
+ * Manually add an attendance record for an intern (Admin Action).
+ * Automatically logs audit trail and synchronizes monthly review & payroll.
+ */
+export async function adminCreateAttendanceRecord(
+  params: {
+    intern: UserProfile;
+    date: Date;
+    checkInTime: string;
+    checkOutTime: string | null;
+    locationType: LocationType;
+    locationNote?: string;
+    notes?: string;
+    reason?: string;
+  },
+  adminProfile: UserProfile
+): Promise<AttendanceRecord> {
+  const { intern, date, checkInTime, checkOutTime, locationType, locationNote, notes, reason } = params;
+
+  const monthYear = formatMonthYear(date);
+  const dayNum = date.getDate();
+  const monthName = formatShortMonth(date);
+  const dayOfWeek = date.toLocaleDateString('en-US', { weekday: 'long' });
+
+  let totalDuration = '';
+  let totalMinutes = 0;
+  let status: AttendanceRecord['status'] = 'normal';
+
+  if (checkOutTime) {
+    const calc = calculateDurationStr(checkInTime, checkOutTime);
+    totalDuration = calc.durationStr;
+    totalMinutes = calc.totalMinutes;
+  } else {
+    status = 'active';
+  }
+
+  const recordId = `att_adm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const nowIso = new Date().toISOString();
+  const displayLocation = locationNote?.trim() || (locationType === 'office' ? 'Bangkok HQ' : 'Outside Office / Field Site');
+
+  const auditEntry: AttendanceAuditLog = {
+    id: `audit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    recordId,
+    internId: intern.id,
+    internName: intern.name,
+    action: 'created_by_admin',
+    adminId: adminProfile.id,
+    adminName: adminProfile.name,
+    adminEmail: adminProfile.email,
+    timestamp: nowIso,
+    reason: reason?.trim() || 'Manually added attendance shift',
+    changesSummary: `Manually added attendance shift for ${monthName} ${dayNum}, ${date.getFullYear()} (${checkInTime} - ${checkOutTime || 'Active'}, ${locationType === 'office' ? 'Office' : 'Outside'})`,
+    fieldChanges: [
+      { field: 'date', label: 'Shift Date', before: null, after: `${dayOfWeek}, ${monthName} ${dayNum}, ${date.getFullYear()}` },
+      { field: 'checkInTime', label: 'Check-in Time', before: null, after: checkInTime },
+      { field: 'checkOutTime', label: 'Check-out Time', before: null, after: checkOutTime || 'Active Shift' },
+      { field: 'locationType', label: 'Work Location', before: null, after: locationType === 'office' ? 'Office' : 'Outside / Travel' },
+      { field: 'notes', label: 'Shift Notes', before: null, after: notes || '—' },
+    ],
+    snapshotAfter: {
+      id: recordId,
+      internId: intern.id,
+      monthYear,
+      date: dayNum,
+      checkInTime,
+      checkOutTime,
+      locationType,
+      notes: notes || '',
+    },
+  };
+
+  const newRecord: AttendanceRecord = {
+    id: recordId,
+    internId: intern.id,
+    monthYear,
+    date: dayNum,
+    monthName,
+    dayOfWeek,
+    checkInTime,
+    checkOutTime: checkOutTime || null,
+    totalDuration,
+    totalMinutes,
+    status,
+    locationType,
+    locationNote: displayLocation,
+    checkInNote: notes || '',
+    checkOutNote: '',
+    notes: notes || '',
+    coordinates: { lat: 13.7563, lng: 100.5018 },
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    isManuallyAdded: true,
+    lastEditedBy: {
+      adminId: adminProfile.id,
+      adminName: adminProfile.name,
+      adminEmail: adminProfile.email,
+      editedAt: nowIso,
+      action: 'created_by_admin',
+      reason: reason?.trim() || 'Manually added by admin',
+      summary: auditEntry.changesSummary,
+    },
+    auditHistory: [auditEntry],
+  };
+
+  // 1. Save Attendance Record
+  await setDoc(doc(db, ATTENDANCE_COLLECTION, recordId), newRecord);
+
+  // 2. Save Audit Log
+  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), auditEntry);
+
+  // 3. Sync aggregates
+  await syncAggregatesAfterAttendanceChange(intern.id, monthYear);
+
+  return newRecord;
+}
+
+/**
+ * Manually update an existing attendance record (Admin Action).
+ * Computes diffs, logs audit trail, and synchronizes monthly review & payroll.
+ */
+export async function adminUpdateAttendanceRecord(
+  params: {
+    recordId: string;
+    checkInTime: string;
+    checkOutTime: string | null;
+    locationType: LocationType;
+    locationNote?: string;
+    notes?: string;
+    reason?: string;
+  },
+  adminProfile: UserProfile
+): Promise<void> {
+  const { recordId, checkInTime, checkOutTime, locationType, locationNote, notes, reason } = params;
+  const docRef = doc(db, ATTENDANCE_COLLECTION, recordId);
+  const docSnap = await getDoc(docRef);
+
+  if (!docSnap.exists()) {
+    throw new Error('Attendance record not found');
+  }
+
+  const existing = docSnap.data() as AttendanceRecord;
+  const nowIso = new Date().toISOString();
+
+  // Calculate new duration
+  let totalDuration = existing.totalDuration;
+  let totalMinutes = existing.totalMinutes;
+  let status: AttendanceRecord['status'] = existing.status;
+
+  if (checkInTime && checkOutTime) {
+    const calc = calculateDurationStr(checkInTime, checkOutTime);
+    totalDuration = calc.durationStr;
+    totalMinutes = calc.totalMinutes;
+    status = 'normal';
+  } else if (!checkOutTime) {
+    status = 'active';
+    totalDuration = '';
+    totalMinutes = 0;
+  }
+
+  // Calculate fieldChanges diff
+  const fieldChanges: { field: string; label: string; before: any; after: any }[] = [];
+  if (existing.checkInTime !== checkInTime) {
+    fieldChanges.push({ field: 'checkInTime', label: 'Check-in Time', before: existing.checkInTime, after: checkInTime });
+  }
+  if ((existing.checkOutTime || null) !== (checkOutTime || null)) {
+    fieldChanges.push({ field: 'checkOutTime', label: 'Check-out Time', before: existing.checkOutTime || '—', after: checkOutTime || '—' });
+  }
+  if (existing.locationType !== locationType) {
+    fieldChanges.push({ field: 'locationType', label: 'Work Location', before: existing.locationType, after: locationType });
+  }
+  if ((existing.notes || '') !== (notes || '')) {
+    fieldChanges.push({ field: 'notes', label: 'Notes', before: existing.notes || '—', after: notes || '—' });
+  }
+
+  const changesSummary =
+    fieldChanges.length > 0
+      ? fieldChanges.map((f) => `${f.label}: "${f.before}" → "${f.after}"`).join('; ')
+      : 'Admin updated attendance record fields';
+
+  let internName = 'Intern';
+  try {
+    const userSnap = await getDoc(doc(db, USERS_COLLECTION, existing.internId));
+    if (userSnap.exists()) {
+      internName = (userSnap.data() as UserProfile).name;
+    }
+  } catch (_) {}
+
+  const auditEntry: AttendanceAuditLog = {
+    id: `audit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    recordId,
+    internId: existing.internId,
+    internName,
+    action: 'edited_by_admin',
+    adminId: adminProfile.id,
+    adminName: adminProfile.name,
+    adminEmail: adminProfile.email,
+    timestamp: nowIso,
+    reason: reason?.trim() || 'Manual administrative correction',
+    changesSummary,
+    fieldChanges,
+    snapshotBefore: {
+      checkInTime: existing.checkInTime,
+      checkOutTime: existing.checkOutTime,
+      locationType: existing.locationType,
+      notes: existing.notes,
+      totalDuration: existing.totalDuration,
+    },
+    snapshotAfter: {
+      checkInTime,
+      checkOutTime,
+      locationType,
+      notes: notes || '',
+      totalDuration,
+    },
+  };
+
+  const previousHistory = existing.auditHistory || [];
+  const updatedHistory = [auditEntry, ...previousHistory];
+
+  const updatePayload: Partial<AttendanceRecord> = {
+    checkInTime,
+    checkOutTime: checkOutTime || null,
+    locationType,
+    locationNote: locationNote || (locationType === 'office' ? 'Bangkok HQ' : (existing.locationNote || 'Outside Office / Field Site')),
+    notes: notes || '',
+    checkInNote: notes || '',
+    checkOutNote: '',
+    totalDuration,
+    totalMinutes,
+    status,
+    isManuallyEdited: true,
+    lastEditedBy: {
+      adminId: adminProfile.id,
+      adminName: adminProfile.name,
+      adminEmail: adminProfile.email,
+      editedAt: nowIso,
+      action: 'edited_by_admin',
+      reason: reason?.trim() || 'Admin manual correction',
+      summary: changesSummary,
+    },
+    auditHistory: updatedHistory,
+    updatedAt: nowIso,
+  };
+
+  // 1. Update Attendance Record
+  await updateDoc(docRef, updatePayload);
+
+  // 2. Save Audit Log
+  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), auditEntry);
+
+  // 3. Sync aggregates
+  await syncAggregatesAfterAttendanceChange(existing.internId, existing.monthYear);
+}
+
+/**
+ * Delete an attendance record entirely (Admin Action).
+ * Preserves audit log document with 'deleted_by_admin', snapshot, and reason.
+ * Synchronizes monthly reviews and payroll days worked.
+ */
+export async function adminDeleteAttendanceRecord(
+  recordId: string,
+  adminProfile: UserProfile,
+  reason?: string
+): Promise<void> {
+  const docRef = doc(db, ATTENDANCE_COLLECTION, recordId);
+  const docSnap = await getDoc(docRef);
+
+  if (!docSnap.exists()) {
+    return;
+  }
+
+  const existing = docSnap.data() as AttendanceRecord;
+  const nowIso = new Date().toISOString();
+
+  let internName = 'Intern';
+  try {
+    const userSnap = await getDoc(doc(db, USERS_COLLECTION, existing.internId));
+    if (userSnap.exists()) {
+      internName = (userSnap.data() as UserProfile).name;
+    }
+  } catch (_) {}
+
+  const auditEntry: AttendanceAuditLog = {
+    id: `audit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    recordId,
+    internId: existing.internId,
+    internName,
+    action: 'deleted_by_admin',
+    adminId: adminProfile.id,
+    adminName: adminProfile.name,
+    adminEmail: adminProfile.email,
+    timestamp: nowIso,
+    reason: reason?.trim() || 'Record removed by admin (mistaken entry or holiday)',
+    changesSummary: `Permanently removed shift record for ${existing.monthName} ${existing.date} (${existing.checkInTime} - ${existing.checkOutTime || 'Active'}, ${existing.locationType === 'office' ? 'Office' : 'Outside'})`,
+    snapshotBefore: existing,
+  };
+
+  // 1. Save Audit Log before deleting record
+  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), auditEntry);
+
+  // 2. Delete the attendance document
+  await deleteDoc(docRef);
+
+  // 3. Sync aggregates so Days Worked and Payroll decrease appropriately
+  await syncAggregatesAfterAttendanceChange(existing.internId, existing.monthYear);
+}
+
+/**
+ * Subscribe to all Attendance Audit Logs in real time
+ */
+export function subscribeToAttendanceAuditLogs(
+  callback: (logs: AttendanceAuditLog[]) => void
+) {
+  const coll = collection(db, ATTENDANCE_AUDIT_COLLECTION);
+  return onSnapshot(
+    coll,
+    (snapshot) => {
+      const logs: AttendanceAuditLog[] = [];
+      snapshot.forEach((docSnap) => {
+        logs.push(docSnap.data() as AttendanceAuditLog);
+      });
+      // Sort newest first
+      logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      callback(logs);
+    },
+    (err) => {
+      console.error('Audit logs subscription error:', err);
+    }
+  );
 }
 

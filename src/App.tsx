@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   AttendanceRecord,
   InternMonthlyReview,
@@ -10,15 +10,13 @@ import {
 import { CheckInScreen } from './components/CheckInScreen';
 import { AttendanceHistoryScreen } from './components/AttendanceHistoryScreen';
 import { LoginScreen } from './components/LoginScreen';
-import { SupervisorPortalScreen } from './components/SupervisorPortalScreen';
 import { PayrollExportScreen } from './components/PayrollExportScreen';
 import { ProfileScreen } from './components/ProfileScreen';
 import { InternsManagementScreen } from './components/InternsManagementScreen';
 import { AttendanceLogsScreen } from './components/AttendanceLogsScreen';
-import { PublicApprovalScreen } from './components/PublicApprovalScreen';
 import { ScreenSwitcherBar } from './components/ScreenSwitcherBar';
 import { NavigationDrawer } from './components/NavigationDrawer';
-import { DetailReviewModal } from './components/DetailReviewModal';
+
 import { calculateDurationStr } from './utils/attendanceLogUtils';
 import { formatMergedNotes } from './utils/noteUtils';
 
@@ -34,8 +32,6 @@ import {
   assignSupervisorToIntern,
   addAttendanceCheckIn,
   updateAttendanceCheckOut,
-  approveReviewInFirestore,
-  approveAllReviewsInFirestore,
   addPayrollRecordInFirestore,
   updatePayrollRecordInFirestore,
 } from './services/dbService';
@@ -44,7 +40,6 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [currentScreen, setCurrentScreen] = useState<ScreenView>('login');
-  const [publicToken, setPublicToken] = useState<string | null>(null);
   const [isMobileSimulator, setIsMobileSimulator] = useState<boolean>(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
 
@@ -54,34 +49,6 @@ export default function App() {
   const [payrollRecords, setPayrollRecords] = useState<PayrollRecord[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [finalizedCycles, setFinalizedCycles] = useState<FinalizedPayrollCycle[]>([]);
-
-  // Modals state
-  const [detailModalTarget, setDetailModalTarget] = useState<InternMonthlyReview | null>(null);
-
-  // Check for Magic Link token in URL search / hash
-  useEffect(() => {
-    const checkTokenFromUrl = () => {
-      const searchParams = new URLSearchParams(window.location.search);
-      let token = searchParams.get('token');
-
-      if (!token && window.location.hash.includes('token=')) {
-        const hashQuery = window.location.hash.includes('?')
-          ? window.location.hash.split('?')[1]
-          : window.location.hash.split('#')[1];
-        const hashParams = new URLSearchParams(hashQuery);
-        token = hashParams.get('token');
-      }
-
-      if (token || window.location.hash.includes('/approve') || window.location.hash.includes('#approve')) {
-        setPublicToken(token);
-        setCurrentScreen('public_approval');
-      }
-    };
-
-    checkTokenFromUrl();
-    window.addEventListener('hashchange', checkTokenFromUrl);
-    return () => window.removeEventListener('hashchange', checkTokenFromUrl);
-  }, []);
 
   // 1. Purge legacy mock data from Firestore & listen to Firebase Auth
   useEffect(() => {
@@ -97,9 +64,7 @@ export default function App() {
         if (currentScreen === 'login') {
           if (profile.role === 'intern') {
             setCurrentScreen('intern_checkin');
-          } else if (profile.role === 'supervisor') {
-            setCurrentScreen('supervisor_portal');
-          } else if (profile.role === 'payroll_admin') {
+          } else {
             setCurrentScreen('payroll_admin');
           }
         }
@@ -158,9 +123,7 @@ export default function App() {
     setCurrentUser(profile);
     if (profile.role === 'intern') {
       setCurrentScreen('intern_checkin');
-    } else if (profile.role === 'supervisor') {
-      setCurrentScreen('supervisor_portal');
-    } else if (profile.role === 'payroll_admin') {
+    } else {
       setCurrentScreen('payroll_admin');
     }
   };
@@ -230,67 +193,6 @@ export default function App() {
     }
   };
 
-  // Handle manual supervisor check-out confirmation for missing check-outs
-  const handleSupervisorConfirmCheckOut = async (recordId: string, checkOutTime: string, note?: string) => {
-    await handleCheckOut(recordId, checkOutTime, note);
-    // Also update detail modal target in-place so supervisor sees immediate confirmation
-    setDetailModalTarget((prev) => {
-      if (!prev) return null;
-      const targetRec = (prev.records || []).find((r) => r.id === recordId);
-      const checkInTime = targetRec?.checkInTime || '09:00 AM';
-      const { durationStr, totalMinutes } = calculateDurationStr(checkInTime, checkOutTime);
-      const checkInNote =
-        targetRec?.checkInNote ||
-        (targetRec?.locationNote &&
-        targetRec.locationNote !== 'Bangkok HQ' &&
-        targetRec.locationNote !== 'Outside Office / Traveling' &&
-        !targetRec.locationNote.startsWith('Bangkok HQ -')
-          ? targetRec.locationNote
-          : targetRec?.notes && !targetRec.notes.startsWith('[In]')
-          ? targetRec.notes
-          : '');
-      const checkOutNote = note !== undefined ? note.trim() : '';
-      const mergedNotes = formatMergedNotes(checkInNote, checkOutNote);
-
-      const updatedRecords = (prev.records || []).map((r) =>
-        r.id === recordId
-          ? {
-              ...r,
-              checkOutTime,
-              totalDuration: durationStr,
-              totalMinutes,
-              status: 'normal' as const,
-              checkInNote: checkInNote || r.checkInNote,
-              checkOutNote: checkOutNote || r.checkOutNote,
-              notes: mergedNotes,
-            }
-          : r
-      );
-      return {
-        ...prev,
-        records: updatedRecords,
-      };
-    });
-  };
-
-  // Handle Supervisor Approvals in Firestore
-  const handleApproveReview = async (reviewId: string) => {
-    try {
-      await approveReviewInFirestore(reviewId);
-    } catch (err) {
-      console.error('Error approving review in Firestore:', err);
-    }
-  };
-
-  const handleApproveAll = async () => {
-    try {
-      const ids = supervisorReviews.map((r) => r.id);
-      await approveAllReviewsInFirestore(ids);
-    } catch (err) {
-      console.error('Error bulk approving reviews in Firestore:', err);
-    }
-  };
-
   // Handle Payroll Record Updates in Firestore
   const handleUpdatePayrollRecord = async (updated: PayrollRecord) => {
     try {
@@ -338,25 +240,6 @@ export default function App() {
       );
     }
 
-    if (currentScreen === 'public_approval') {
-      return (
-        <PublicApprovalScreen
-          token={publicToken}
-          onGoToLogin={() => {
-            setPublicToken(null);
-            window.location.hash = '';
-            if (currentUser) {
-              if (currentUser.role === 'intern') setCurrentScreen('intern_checkin');
-              else if (currentUser.role === 'supervisor') setCurrentScreen('supervisor_portal');
-              else setCurrentScreen('admin_interns');
-            } else {
-              setCurrentScreen('login');
-            }
-          }}
-        />
-      );
-    }
-
     if (!currentUser || currentScreen === 'login') {
       return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
     }
@@ -391,6 +274,7 @@ export default function App() {
               if (tab === 'profile') setCurrentScreen('intern_profile');
             }}
             approvalStatus={userReview?.status || 'pending'}
+            supervisorReviews={supervisorReviews}
           />
         );
 
@@ -405,19 +289,6 @@ export default function App() {
               if (tab === 'history') setCurrentScreen('intern_history');
               if (tab === 'profile') setCurrentScreen('intern_profile');
             }}
-          />
-        );
-
-      case 'supervisor_portal':
-        return (
-          <SupervisorPortalScreen
-            user={currentUser}
-            reviews={supervisorReviews}
-            onApproveReview={handleApproveReview}
-            onApproveAll={handleApproveAll}
-            onOpenDetailReview={(rev) => setDetailModalTarget(rev)}
-            onLogout={handleLogout}
-            onSwitchScreen={setCurrentScreen}
           />
         );
 
@@ -454,6 +325,8 @@ export default function App() {
             user={currentUser}
             attendanceRecords={attendanceRecords}
             allUsers={allUsers}
+            payrollRecords={payrollRecords}
+            monthlyReviews={supervisorReviews}
             onLogout={handleLogout}
             onSwitchScreen={setCurrentScreen}
           />
@@ -510,16 +383,6 @@ export default function App() {
           user={currentUser}
           onSelectScreen={setCurrentScreen}
           onLogout={handleLogout}
-        />
-      )}
-
-      {/* Detail Timecard Review Modal */}
-      {detailModalTarget && (
-        <DetailReviewModal
-          review={detailModalTarget}
-          onClose={() => setDetailModalTarget(null)}
-          onApprove={handleApproveReview}
-          onConfirmCheckOut={handleSupervisorConfirmCheckOut}
         />
       )}
     </div>
