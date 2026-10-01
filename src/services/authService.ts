@@ -8,7 +8,7 @@ import {
 import { auth, db } from '../lib/firebase';
 import { UserProfile, UserRole } from '../types';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { linkLightweightSupervisorToAuth } from './dbService';
+import { linkLightweightSupervisorToAuth, cleanFirestoreData } from './dbService';
 
 const USERS_COLLECTION = 'users';
 
@@ -77,7 +77,7 @@ export function listenToAuthState(
             supervisorName: null,
           };
 
-          await setDoc(userRef, newProfile);
+          await setDoc(userRef, cleanFirestoreData(newProfile));
           callback(firebaseUser, newProfile);
         }
       }
@@ -212,7 +212,7 @@ export async function registerNewUser(
   };
 
   const userRef = doc(db, USERS_COLLECTION, uid);
-  await setDoc(userRef, fullProfile);
+  await setDoc(userRef, cleanFirestoreData(fullProfile));
 
   return fullProfile;
 }

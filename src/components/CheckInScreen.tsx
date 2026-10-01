@@ -7,8 +7,9 @@ import { formatMergedNotes, getMergedRecordNotes } from '../utils/noteUtils';
 interface CheckInScreenProps {
   user: UserProfile;
   attendanceLogs: AttendanceRecord[];
-  onCheckIn: (record: AttendanceRecord) => void;
-  onCheckOut: (recordId: string, checkOutTime: string, note?: string) => void;
+  isAttendanceLoaded?: boolean;
+  onCheckIn: (record: AttendanceRecord) => Promise<void> | void;
+  onCheckOut: (recordId: string, checkOutTime: string, note?: string) => Promise<void> | void;
   onNavigate: (tab: 'checkin' | 'history' | 'profile') => void;
   onOpenMenu: () => void;
 }
@@ -21,11 +22,15 @@ const OFFICE_COORDINATES = {
 export const CheckInScreen: React.FC<CheckInScreenProps> = ({
   user,
   attendanceLogs,
+  isAttendanceLoaded = false,
   onCheckIn,
   onCheckOut,
   onNavigate,
   onOpenMenu,
 }) => {
+  const [isSubmittingAction, setIsSubmittingAction] = useState<boolean>(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
   // Current local live time
   const [currentTime, setCurrentTime] = useState<string>(() =>
     new Date().toLocaleTimeString('en-US', {
@@ -83,6 +88,8 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
 
   // Sync with incoming attendanceLogs prop updates
   useEffect(() => {
+    if (!isAttendanceLoaded) return;
+
     const found = attendanceLogs.find(
       (log) =>
         log.date === todayDateNum &&
@@ -94,8 +101,15 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
       try {
         localStorage.setItem(storageKey, JSON.stringify(found));
       } catch (_) {}
+    } else {
+      // Confirmed by Firestore that no attendance document exists for today!
+      // Clear phantom local cache to eliminate false "Completed" states
+      setLocalTodayRecord(null);
+      try {
+        localStorage.removeItem(storageKey);
+      } catch (_) {}
     }
-  }, [attendanceLogs, todayDateNum, todayMonthYear, user.id, storageKey]);
+  }, [attendanceLogs, isAttendanceLoaded, todayDateNum, todayMonthYear, user.id, storageKey]);
 
   // Confirmation Modal state for accidental tap prevention
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -134,14 +148,27 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
   const isCompletedToday = !!todayRecord && !!todayRecord.checkOutTime;
 
   // Handle resolving missed check-out
-  const handleResolveMissedCheckout = (selectedTime: string, noteText: string) => {
+  const handleResolveMissedCheckout = async (selectedTime: string, noteText: string) => {
     if (!missedCheckoutRecord) return;
-    const finalNote = noteText.trim() || undefined;
-    onCheckOut(missedCheckoutRecord.id, selectedTime, finalNote);
-    setIsMissedCheckoutModalOpen(false);
-    setToastMessage(
-      `Check-out recorded for ${missedCheckoutRecord.monthName} ${missedCheckoutRecord.date} at ${selectedTime}. You may now check in for today!`
-    );
+    const finalNote = noteText.trim();
+    try {
+      await onCheckOut(missedCheckoutRecord.id, selectedTime, finalNote || undefined);
+      setIsMissedCheckoutModalOpen(false);
+      setToastMessage(
+        `Check-out recorded for ${missedCheckoutRecord.monthName} ${missedCheckoutRecord.date} at ${selectedTime}. You may now check in for today!`
+      );
+      setTimeout(() => setToastMessage(null), 4000);
+    } catch (err: any) {
+      console.error('Resolve missed check-out failed:', err);
+      let msg = 'Database write failed. Please try again.';
+      try {
+        const parsed = JSON.parse(err.message);
+        msg = parsed.error || msg;
+      } catch (_) {
+        msg = err?.message || msg;
+      }
+      setToastMessage(`Failed to log missed check-out: ${msg}`);
+    }
   };
 
   // Update clock & fetch initial device GPS coordinates
@@ -199,6 +226,7 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
     }
 
     if (isCurrentlyCheckedIn && todayRecord) {
+      setActionError(null);
       setConfirmDialog({
         isOpen: true,
         type: 'check_out',
@@ -214,6 +242,7 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
         return;
       }
 
+      setActionError(null);
       setConfirmDialog({
         isOpen: true,
         type: 'check_in',
@@ -223,9 +252,11 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
   };
 
   // Finalize Check-in or Check-out after user confirms in the modal
-  const handleConfirmAction = () => {
-    if (!confirmDialog) return;
+  const handleConfirmAction = async () => {
+    if (!confirmDialog || isSubmittingAction) return;
     const actionTime = confirmDialog.time || currentTime;
+    setIsSubmittingAction(true);
+    setActionError(null);
 
     if (confirmDialog.type === 'check_in') {
       const now = new Date();
@@ -245,29 +276,41 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
         locationType: locationType,
         locationNote: inNote || (locationType === 'office' ? 'Bangkok HQ' : 'Outside Office / Traveling'),
         coordinates: { ...coords },
-        checkInNote: inNote || undefined,
-        notes: inNote || undefined,
+        checkInNote: inNote || '',
+        notes: inNote || '',
       };
 
-      // 1. Immediately update local state so Daily Summary displays time & button switches to Check Out
-      setLocalTodayRecord(newLog);
       try {
-        localStorage.setItem(storageKey, JSON.stringify(newLog));
-      } catch (_) {}
+        // Await the genuine Firestore write operation
+        await onCheckIn(newLog);
 
-      // 2. Close confirmation modal
-      setConfirmDialog(null);
+        // Only upon confirmed database write, persist to local state
+        setLocalTodayRecord(newLog);
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(newLog));
+        } catch (_) {}
 
-      // 3. Notify parent/Firestore
-      onCheckIn(newLog);
-
-      // 4. Feedback toast
-      setToastMessage(
-        locationType === 'office'
-          ? `Checked in at ${actionTime} (Office)`
-          : `Checked in at ${actionTime} (Outside / Traveling)`
-      );
-      setTimeout(() => setToastMessage(null), 4000);
+        setConfirmDialog(null);
+        setToastMessage(
+          locationType === 'office'
+            ? `Checked in at ${actionTime} (Office)`
+            : `Checked in at ${actionTime} (Outside / Traveling)`
+        );
+        setTimeout(() => setToastMessage(null), 4000);
+      } catch (err: any) {
+        console.error('Check-in Firestore write failed:', err);
+        let msg = 'Failed to write check-in to Firestore. Please try again.';
+        try {
+          const parsed = JSON.parse(err.message);
+          msg = parsed.error || msg;
+        } catch (_) {
+          msg = err?.message || msg;
+        }
+        setActionError(`Check-in write failed: ${msg}`);
+        setToastMessage(`Check-in failed: ${msg}`);
+      } finally {
+        setIsSubmittingAction(false);
+      }
     } else if (confirmDialog.type === 'check_out' && todayRecord) {
       const { durationStr, totalMinutes } = calculateDurationStr(todayRecord.checkInTime, actionTime);
       const outNote = checkOutNote.trim();
@@ -288,27 +331,39 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
         checkOutTime: actionTime,
         totalDuration: durationStr,
         totalMinutes: totalMinutes,
-        checkInNote: inNote || todayRecord.checkInNote,
-        checkOutNote: outNote || undefined,
+        checkInNote: inNote || todayRecord.checkInNote || '',
+        checkOutNote: outNote || '',
         notes: mergedNotes,
       };
 
-      // 1. Immediately update local state so Daily Summary and Completed states show right away
-      setLocalTodayRecord(updatedLog);
       try {
-        localStorage.setItem(storageKey, JSON.stringify(updatedLog));
-      } catch (_) {}
+        // Await the genuine Firestore write operation
+        await onCheckOut(todayRecord.id, actionTime, outNote || undefined);
 
-      // 2. Close confirmation modal
-      setConfirmDialog(null);
-      setCheckOutNote('');
+        // Only upon confirmed database write, persist to local state
+        setLocalTodayRecord(updatedLog);
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(updatedLog));
+        } catch (_) {}
 
-      // 3. Notify parent/Firestore
-      onCheckOut(todayRecord.id, actionTime, outNote || undefined);
-
-      // 4. Feedback toast
-      setToastMessage(`Checked out at ${actionTime}. Have a great rest of your day!`);
-      setTimeout(() => setToastMessage(null), 4000);
+        setConfirmDialog(null);
+        setCheckOutNote('');
+        setToastMessage(`Checked out at ${actionTime}. Have a great rest of your day!`);
+        setTimeout(() => setToastMessage(null), 4000);
+      } catch (err: any) {
+        console.error('Check-out Firestore write failed:', err);
+        let msg = 'Failed to write check-out to Firestore. Please try again.';
+        try {
+          const parsed = JSON.parse(err.message);
+          msg = parsed.error || msg;
+        } catch (_) {
+          msg = err?.message || msg;
+        }
+        setActionError(`Check-out write failed: ${msg}`);
+        setToastMessage(`Check-out failed: ${msg}`);
+      } finally {
+        setIsSubmittingAction(false);
+      }
     }
   };
 
@@ -348,6 +403,30 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
 
       {/* Main Content */}
       <main className="flex-1 px-4 sm:px-6 py-4 flex flex-col items-center justify-start gap-5 max-w-md mx-auto w-full">
+        {/* Error Alert Banner */}
+        {actionError && (
+          <div className="w-full bg-[#fff1f2] border-2 border-[#f43f5e] rounded-xl p-4 shadow-sm flex items-start gap-3 animate-fadeIn text-left">
+            <div className="w-9 h-9 rounded-full bg-[#f43f5e] text-white flex items-center justify-center shrink-0 shadow-xs">
+              <span className="material-symbols-outlined text-[20px]">error</span>
+            </div>
+            <div className="flex-1">
+              <h4 className="text-xs font-bold text-[#9f1239] uppercase tracking-wide">
+                Database Write Failed
+              </h4>
+              <p className="text-xs text-[#be123c] mt-0.5 leading-relaxed">
+                {actionError}
+              </p>
+            </div>
+            <button
+              onClick={() => setActionError(null)}
+              className="text-[#9f1239] hover:text-[#4c0519] p-1 cursor-pointer"
+              title="Dismiss error"
+            >
+              <span className="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          </div>
+        )}
+
         {/* Gentle Reminder: Missing Check-out from Previous Day */}
         {missedCheckoutRecord && (
           <div className="w-full bg-[#fff7ed] border-2 border-[#f97316]/50 rounded-xl p-4 shadow-sm flex flex-col gap-3 animate-fadeIn">
@@ -893,6 +972,16 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
               )}
             </div>
 
+            {actionError && (
+              <div className="bg-[#fff1f2] border border-[#f43f5e] p-3 rounded-xl text-left text-xs text-[#9f1239] flex items-start gap-2">
+                <span className="material-symbols-outlined text-[18px] text-[#e11d48] shrink-0 mt-0.5">error</span>
+                <div className="flex-1">
+                  <p className="font-bold">Database Write Error</p>
+                  <p className="mt-0.5 break-words">{actionError}</p>
+                </div>
+              </div>
+            )}
+
             <p className="text-[11px] text-[#737685]">
               Tap Confirm to record this timestamp or Cancel to return without saving.
             </p>
@@ -902,25 +991,36 @@ export const CheckInScreen: React.FC<CheckInScreenProps> = ({
               <button
                 type="button"
                 id="cancelConfirmBtn"
+                disabled={isSubmittingAction}
                 onClick={() => setConfirmDialog(null)}
-                className="w-full py-2.5 px-4 rounded-xl border border-[#c3c6d6] text-xs font-semibold text-[#434654] hover:bg-[#f1f3ff] transition-all cursor-pointer"
+                className="w-full py-2.5 px-4 rounded-xl border border-[#c3c6d6] text-xs font-semibold text-[#434654] hover:bg-[#f1f3ff] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 id="confirmActionBtn"
+                disabled={isSubmittingAction}
                 onClick={handleConfirmAction}
-                className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold text-white transition-all shadow-sm cursor-pointer flex items-center justify-center gap-1.5 ${
+                className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold text-white transition-all shadow-sm cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed ${
                   confirmDialog.type === 'check_in'
                     ? 'bg-[#0052cc] hover:bg-[#0040a2] active:scale-95'
                     : 'bg-[#ea580c] hover:bg-[#c2410c] active:scale-95'
                 }`}
               >
-                <span className="material-symbols-outlined text-[16px]">
-                  {confirmDialog.type === 'check_in' ? 'check_circle' : 'task_alt'}
-                </span>
-                <span>{confirmDialog.type === 'check_in' ? 'Confirm Check-In' : 'Confirm Check-Out'}</span>
+                {isSubmittingAction ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>{confirmDialog.type === 'check_in' ? 'Saving Check-In...' : 'Saving Check-Out...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">
+                      {confirmDialog.type === 'check_in' ? 'check_circle' : 'task_alt'}
+                    </span>
+                    <span>{confirmDialog.type === 'check_in' ? 'Confirm Check-In' : 'Confirm Check-Out'}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

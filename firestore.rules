@@ -16,6 +16,9 @@ service cloud.firestore {
     match /finalizedPayrollCycles/{cycleId} {
       allow read, write: if true;
     }
+    match /attendance_audit_logs/{logId} {
+      allow read, write: if true;
+    }
     match /approvalLinks/{token} {
       // Allow passwordless supervisor to look up single token and approve
       allow get: if true;

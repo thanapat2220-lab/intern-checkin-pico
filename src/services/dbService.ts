@@ -10,7 +10,7 @@ import {
   where,
   deleteDoc,
 } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import {
   AttendanceRecord,
   InternMonthlyReview,
@@ -25,6 +25,89 @@ import {
 import { formatMergedNotes } from '../utils/noteUtils';
 import { formatMonthYear, formatShortMonth } from '../utils/dateUtils';
 import { calculateDurationStr } from '../utils/attendanceLogUtils';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map((provider) => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+/**
+ * Strips any undefined fields recursively to prevent Firestore serializer exceptions,
+ * and ensures optional note and string fields are cleanly normalized to empty strings.
+ */
+export function cleanFirestoreData<T extends Record<string, any>>(obj: T): T {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) {
+    return obj.map((item) => (typeof item === 'object' && item !== null ? cleanFirestoreData(item) : item)) as unknown as T;
+  }
+  const result: any = {};
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (val !== undefined) {
+      if (val !== null && typeof val === 'object' && !(val instanceof Date)) {
+        result[key] = cleanFirestoreData(val);
+      } else {
+        result[key] = val;
+      }
+    } else {
+      // If note or optional text field was undefined, ensure it safely becomes empty string
+      if (
+        key === 'checkInNote' ||
+        key === 'checkOutNote' ||
+        key === 'notes' ||
+        key === 'locationNote' ||
+        key === 'accountNumber' ||
+        key === 'reason' ||
+        key === 'changesSummary'
+      ) {
+        result[key] = '';
+      }
+    }
+  }
+  return result;
+}
 
 const ATTENDANCE_COLLECTION = 'attendance';
 const REVIEWS_COLLECTION = 'monthlyReviews';
@@ -204,7 +287,7 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
 export async function saveUserProfile(user: UserProfile): Promise<void> {
   try {
     const docRef = doc(db, USERS_COLLECTION, user.id);
-    await setDoc(docRef, { ...user, updatedAt: new Date().toISOString() }, { merge: true });
+    await setDoc(docRef, cleanFirestoreData({ ...user, updatedAt: new Date().toISOString() }), { merge: true });
   } catch (err) {
     console.error('Error saving user profile:', err);
     throw err;
@@ -278,7 +361,7 @@ export async function createStaffAccount(data: {
   };
 
   const userRef = doc(db, USERS_COLLECTION, docId);
-  await setDoc(userRef, staffProfile);
+  await setDoc(userRef, cleanFirestoreData(staffProfile));
 
   return staffProfile;
 }
@@ -610,61 +693,72 @@ export function subscribeToAttendance(
 }
 
 export async function addAttendanceCheckIn(record: AttendanceRecord): Promise<void> {
+  const docPath = `${ATTENDANCE_COLLECTION}/${record.id}`;
   try {
-    const docRef = doc(db, ATTENDANCE_COLLECTION, record.id);
-    await setDoc(docRef, {
+    const cleanRecord = cleanFirestoreData({
       ...record,
+      checkInNote: record.checkInNote || '',
+      notes: record.notes || '',
+      checkOutTime: record.checkOutTime || null,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     });
 
+    const docRef = doc(db, ATTENDANCE_COLLECTION, record.id);
+    await setDoc(docRef, cleanRecord);
+
     // Also update monthly review summary for this intern
-    const revRef = doc(db, REVIEWS_COLLECTION, `rev-${record.internId}`);
-    const revSnap = await getDoc(revRef);
+    try {
+      const revRef = doc(db, REVIEWS_COLLECTION, `rev-${record.internId}`);
+      const revSnap = await getDoc(revRef);
 
-    if (revSnap.exists()) {
-      const revData = revSnap.data() as InternMonthlyReview;
-      const updatedRecords = [record, ...(revData.records || []).filter((r) => r.id !== record.id)];
-      const officeCount = updatedRecords.filter((r) => r.locationType === 'office').length;
-      const outsideCount = updatedRecords.filter((r) => r.locationType === 'outside').length;
+      if (revSnap.exists()) {
+        const revData = revSnap.data() as InternMonthlyReview;
+        const updatedRecords = [cleanRecord, ...(revData.records || []).filter((r) => r.id !== record.id)];
+        const officeCount = updatedRecords.filter((r) => r.locationType === 'office').length;
+        const outsideCount = updatedRecords.filter((r) => r.locationType === 'outside').length;
 
-      await updateDoc(revRef, {
-        daysLogged: updatedRecords.length,
-        officeDaysCount: officeCount,
-        outsideDaysCount: outsideCount,
-        records: updatedRecords,
-        updatedAt: new Date().toISOString(),
-      });
-    } else {
-      // Fetch user profile to populate review metadata
-      const userRef = doc(db, USERS_COLLECTION, record.internId);
-      const userSnap = await getDoc(userRef);
-      const userData = userSnap.exists() ? (userSnap.data() as UserProfile) : null;
+        await updateDoc(revRef, cleanFirestoreData({
+          daysLogged: updatedRecords.length,
+          officeDaysCount: officeCount,
+          outsideDaysCount: outsideCount,
+          records: updatedRecords,
+          updatedAt: new Date().toISOString(),
+        }));
+      } else {
+        // Fetch user profile to populate review metadata
+        const userRef = doc(db, USERS_COLLECTION, record.internId);
+        const userSnap = await getDoc(userRef);
+        const userData = userSnap.exists() ? (userSnap.data() as UserProfile) : null;
 
-      const newReview: InternMonthlyReview = {
-        id: `rev-${record.internId}`,
-        internId: record.internId,
-        name: userData?.name || 'Intern',
-        initials: userData?.initials || 'IN',
-        department: userData?.department || 'Engineering',
-        avatarUrl: userData?.avatarUrl,
-        monthYear: record.monthYear,
-        daysLogged: 1,
-        officeDaysCount: record.locationType === 'office' ? 1 : 0,
-        outsideDaysCount: record.locationType === 'outside' ? 1 : 0,
-        status: 'pending',
-        records: [record],
-        supervisorId: userData?.supervisorId || null,
-        supervisorName: userData?.supervisorName || null,
-      };
+        const newReview: InternMonthlyReview = {
+          id: `rev-${record.internId}`,
+          internId: record.internId,
+          name: userData?.name || 'Intern',
+          initials: userData?.initials || 'IN',
+          department: userData?.department || 'Engineering',
+          avatarUrl: userData?.avatarUrl || null as any,
+          monthYear: record.monthYear,
+          daysLogged: 1,
+          officeDaysCount: record.locationType === 'office' ? 1 : 0,
+          outsideDaysCount: record.locationType === 'outside' ? 1 : 0,
+          status: 'pending',
+          records: [cleanRecord],
+          supervisorId: userData?.supervisorId || null,
+          supervisorName: userData?.supervisorName || null,
+        };
 
-      await setDoc(revRef, {
-        ...newReview,
-        createdAt: new Date().toISOString(),
-      });
+        await setDoc(revRef, cleanFirestoreData({
+          ...newReview,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }));
+      }
+    } catch (revErr) {
+      console.warn('Could not update monthly review doc, but attendance was successfully saved to Firestore:', revErr);
     }
   } catch (err) {
-    console.error('Error adding attendance record:', err);
-    throw err;
+    handleFirestoreError(err, OperationType.CREATE, docPath);
   }
 }
 
@@ -676,19 +770,25 @@ export async function updateAttendanceCheckOut(
   totalMinutes: number,
   notes?: string
 ): Promise<void> {
+  const docPath = `${ATTENDANCE_COLLECTION}/${recordId}`;
   try {
     const docRef = doc(db, ATTENDANCE_COLLECTION, recordId);
-    const docSnap = await getDoc(docRef);
-
     let checkInNote = '';
     let existingNotes = '';
     let locationNote = '';
+    let internId = '';
 
-    if (docSnap.exists()) {
-      const existingData = docSnap.data() as AttendanceRecord;
-      checkInNote = existingData.checkInNote || '';
-      existingNotes = existingData.notes || '';
-      locationNote = existingData.locationNote || '';
+    try {
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const existingData = docSnap.data() as AttendanceRecord;
+        checkInNote = existingData.checkInNote || '';
+        existingNotes = existingData.notes || '';
+        locationNote = existingData.locationNote || '';
+        internId = existingData.internId || '';
+      }
+    } catch (getErr) {
+      console.warn('Could not fetch existing attendance record before checkout:', getErr);
     }
 
     // Determine the existing check-in note
@@ -704,11 +804,6 @@ export async function updateAttendanceCheckOut(
         : '');
 
     const checkOutNote = notes !== undefined ? notes.trim() : '';
-
-    // Merge notes:
-    // Both exist: "[In] ... | [Out] ..."
-    // Single exists: note without prefix clutter
-    // Neither: ""
     const mergedNotes = formatMergedNotes(resolvedCheckInNote, checkOutNote);
 
     const updatePayload: Record<string, any> = {
@@ -718,21 +813,17 @@ export async function updateAttendanceCheckOut(
       status: 'normal',
       updatedAt: new Date().toISOString(),
       notes: mergedNotes,
+      checkOutNote: checkOutNote || '',
+      checkInNote: resolvedCheckInNote || '',
     };
-    if (checkOutNote) {
-      updatePayload.checkOutNote = checkOutNote;
-    }
-    if (resolvedCheckInNote) {
-      updatePayload.checkInNote = resolvedCheckInNote;
-    }
 
-    await updateDoc(docRef, updatePayload);
+    // Use setDoc with merge: true so even if the document was missing, it safely creates/updates without throwing!
+    await setDoc(docRef, cleanFirestoreData(updatePayload), { merge: true });
 
-    // Also update record inside monthly review document if it exists
-    if (docSnap.exists()) {
-      const recordData = docSnap.data() as AttendanceRecord;
-      if (recordData.internId) {
-        const revRef = doc(db, REVIEWS_COLLECTION, `rev-${recordData.internId}`);
+    // Also update monthly review summary if internId is known
+    try {
+      if (internId) {
+        const revRef = doc(db, REVIEWS_COLLECTION, `rev-${internId}`);
         const revSnap = await getDoc(revRef);
         if (revSnap.exists()) {
           const revData = revSnap.data() as InternMonthlyReview;
@@ -750,16 +841,17 @@ export async function updateAttendanceCheckOut(
                 }
               : r
           );
-          await updateDoc(revRef, {
+          await updateDoc(revRef, cleanFirestoreData({
             records: updatedRecords,
             updatedAt: new Date().toISOString(),
-          });
+          }));
         }
       }
+    } catch (revErr) {
+      console.warn('Could not update monthly review on checkout:', revErr);
     }
   } catch (err) {
-    console.error('Error checking out:', err);
-    throw err;
+    handleFirestoreError(err, OperationType.UPDATE, docPath);
   }
 }
 
@@ -1489,10 +1581,10 @@ export async function adminCreateAttendanceRecord(
   };
 
   // 1. Save Attendance Record
-  await setDoc(doc(db, ATTENDANCE_COLLECTION, recordId), newRecord);
+  await setDoc(doc(db, ATTENDANCE_COLLECTION, recordId), cleanFirestoreData(newRecord));
 
   // 2. Save Audit Log
-  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), auditEntry);
+  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), cleanFirestoreData(auditEntry));
 
   // 3. Sync aggregates
   await syncAggregatesAfterAttendanceChange(intern.id, monthYear);
@@ -1629,10 +1721,10 @@ export async function adminUpdateAttendanceRecord(
   };
 
   // 1. Update Attendance Record
-  await updateDoc(docRef, updatePayload);
+  await updateDoc(docRef, cleanFirestoreData(updatePayload));
 
   // 2. Save Audit Log
-  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), auditEntry);
+  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), cleanFirestoreData(auditEntry));
 
   // 3. Sync aggregates
   await syncAggregatesAfterAttendanceChange(existing.internId, existing.monthYear);
@@ -1682,7 +1774,7 @@ export async function adminDeleteAttendanceRecord(
   };
 
   // 1. Save Audit Log before deleting record
-  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), auditEntry);
+  await setDoc(doc(db, ATTENDANCE_AUDIT_COLLECTION, auditEntry.id), cleanFirestoreData(auditEntry));
 
   // 2. Delete the attendance document
   await deleteDoc(docRef);

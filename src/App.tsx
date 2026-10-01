@@ -45,6 +45,7 @@ export default function App() {
 
   // Firestore real-time state
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [isAttendanceLoaded, setIsAttendanceLoaded] = useState<boolean>(false);
   const [supervisorReviews, setSupervisorReviews] = useState<InternMonthlyReview[]>([]);
   const [payrollRecords, setPayrollRecords] = useState<PayrollRecord[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
@@ -79,13 +80,17 @@ export default function App() {
 
   // 2. Real-time Firestore Subscriptions for data
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser) {
+      setIsAttendanceLoaded(false);
+      return;
+    }
 
     // For interns, fetch their specific attendance or all if needed
     const unsubAttendance = subscribeToAttendance(
       currentUser.role === 'intern' ? currentUser.id : null,
       (records) => {
         setAttendanceRecords(records);
+        setIsAttendanceLoaded(true);
       }
     );
 
@@ -141,36 +146,36 @@ export default function App() {
 
   // Handle Check-in Action in Firestore
   const handleCheckIn = async (newRecord: AttendanceRecord) => {
-    // Optimistically update local attendance records immediately
-    setAttendanceRecords((prev) => [newRecord, ...prev.filter((r) => r.id !== newRecord.id)]);
     try {
       await addAttendanceCheckIn(newRecord);
+      setAttendanceRecords((prev) => [newRecord, ...prev.filter((r) => r.id !== newRecord.id)]);
     } catch (err) {
       console.error('Error saving check-in to Firestore:', err);
+      throw err;
     }
   };
 
   // Handle Check-out Action in Firestore
   const handleCheckOut = async (recordId: string, checkOutTime: string, note?: string) => {
-    try {
-      const targetRecord = attendanceRecords.find((r) => r.id === recordId);
-      const checkInTime = targetRecord?.checkInTime || '09:00 AM';
-      const { durationStr, totalMinutes } = calculateDurationStr(checkInTime, checkOutTime);
-      
-      const checkInNote =
-        targetRecord?.checkInNote ||
-        (targetRecord?.locationNote &&
-        targetRecord.locationNote !== 'Bangkok HQ' &&
-        targetRecord.locationNote !== 'Outside Office / Traveling' &&
-        !targetRecord.locationNote.startsWith('Bangkok HQ -')
-          ? targetRecord.locationNote
-          : targetRecord?.notes && !targetRecord.notes.startsWith('[In]')
-          ? targetRecord.notes
-          : '');
-      const checkOutNote = note !== undefined ? note.trim() : '';
-      const mergedNotes = formatMergedNotes(checkInNote, checkOutNote);
+    const targetRecord = attendanceRecords.find((r) => r.id === recordId);
+    const checkInTime = targetRecord?.checkInTime || '09:00 AM';
+    const { durationStr, totalMinutes } = calculateDurationStr(checkInTime, checkOutTime);
+    
+    const checkInNote =
+      targetRecord?.checkInNote ||
+      (targetRecord?.locationNote &&
+      targetRecord.locationNote !== 'Bangkok HQ' &&
+      targetRecord.locationNote !== 'Outside Office / Traveling' &&
+      !targetRecord.locationNote.startsWith('Bangkok HQ -')
+        ? targetRecord.locationNote
+        : targetRecord?.notes && !targetRecord.notes.startsWith('[In]')
+        ? targetRecord.notes
+        : '');
+    const checkOutNote = note !== undefined ? note.trim() : '';
+    const mergedNotes = formatMergedNotes(checkInNote, checkOutNote);
 
-      // Optimistically update local attendance records immediately
+    try {
+      await updateAttendanceCheckOut(recordId, checkOutTime, durationStr, totalMinutes, note);
       setAttendanceRecords((prev) =>
         prev.map((r) =>
           r.id === recordId
@@ -187,9 +192,9 @@ export default function App() {
             : r
         )
       );
-      await updateAttendanceCheckOut(recordId, checkOutTime, durationStr, totalMinutes, note);
     } catch (err) {
       console.error('Error saving check-out to Firestore:', err);
+      throw err;
     }
   };
 
@@ -250,6 +255,7 @@ export default function App() {
           <CheckInScreen
             user={currentUser}
             attendanceLogs={attendanceRecords}
+            isAttendanceLoaded={isAttendanceLoaded}
             onCheckIn={handleCheckIn}
             onCheckOut={handleCheckOut}
             onNavigate={(tab) => {

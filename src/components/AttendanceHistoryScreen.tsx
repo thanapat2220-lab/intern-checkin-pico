@@ -11,7 +11,7 @@ interface AttendanceHistoryScreenProps {
   onBack: () => void;
   onNavigate: (tab: 'checkin' | 'history' | 'profile') => void;
   approvalStatus?: 'pending' | 'approved';
-  onCheckOut?: (recordId: string, checkOutTime: string, note?: string) => void;
+  onCheckOut?: (recordId: string, checkOutTime: string, note?: string) => Promise<void> | void;
   supervisorReviews?: InternMonthlyReview[];
 }
 
