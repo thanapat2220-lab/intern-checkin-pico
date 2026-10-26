@@ -8,7 +8,7 @@ import {
 import { auth, db } from '../lib/firebase';
 import { UserProfile, UserRole } from '../types';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { linkLightweightSupervisorToAuth, cleanFirestoreData } from './dbService';
+import { cleanFirestoreData } from './dbService';
 
 const USERS_COLLECTION = 'users';
 
@@ -31,7 +31,7 @@ export function listenToAuthState(
         if ((rawData.role as string) === 'admin') {
           role = 'payroll_admin';
         }
-        // Ensure user account thanapat2220@gmail.com retains Payroll Admin
+        // Ensure designated administrator account retains Payroll Admin
         if (
           rawData.email?.toLowerCase() === 'thanapat2220@gmail.com' ||
           firebaseUser.email?.toLowerCase() === 'thanapat2220@gmail.com'
@@ -40,23 +40,6 @@ export function listenToAuthState(
         }
         callback(firebaseUser, { ...rawData, role });
       } else {
-        // Check if there was an existing lightweight supervisor or admin profile pre-provisioned for this email
-        try {
-          const linkedProfile = await linkLightweightSupervisorToAuth(
-            firebaseUser.uid,
-            firebaseUser.email || '',
-            {
-              name: firebaseUser.displayName || undefined,
-            }
-          );
-          if (linkedProfile) {
-            callback(firebaseUser, linkedProfile);
-            return;
-          }
-        } catch (linkErr) {
-          console.warn('Pre-provisioned staff check fallback:', linkErr);
-        }
-
         const cleanEmail = (firebaseUser.email || '').trim().toLowerCase();
         const initials = firebaseUser.displayName
           ? firebaseUser.displayName
@@ -115,16 +98,6 @@ export async function loginWithEmail(email: string, pass: string): Promise<UserP
     return { ...rawData, role };
   }
 
-  // Link pre-provisioned staff if available
-  const linkedProfile = await linkLightweightSupervisorToAuth(
-    userCredential.user.uid,
-    email,
-    {}
-  );
-  if (linkedProfile) {
-    return linkedProfile;
-  }
-
   const cleanEmail = email.trim().toLowerCase();
   const initials = (cleanEmail[0] || 'U').toUpperCase();
   const fallbackProfile: UserProfile = {
@@ -179,6 +152,7 @@ export async function loginOrCreateUser(
 
 /**
  * Register a new user with full details and role
+ * Every new registration must create a user document with role: "intern", full stop — zero exceptions.
  */
 export async function registerNewUser(
   email: string,
@@ -189,28 +163,8 @@ export async function registerNewUser(
   const uid = userCredential.user.uid;
   const cleanEmail = email.trim().toLowerCase();
 
-  // Check if this account was pre-provisioned by an admin as supervisor or payroll admin
-  try {
-    const linkedStaff = await linkLightweightSupervisorToAuth(
-      uid,
-      cleanEmail,
-      profileData
-    );
-    if (
-      linkedStaff &&
-      (linkedStaff.role === 'supervisor' || linkedStaff.role === 'payroll_admin')
-    ) {
-      return linkedStaff;
-    }
-  } catch (linkErr) {
-    console.warn('Pre-provisioned staff check fallback:', linkErr);
-  }
-
-  // Public registrations are strictly created as 'intern' only
-  let role: UserRole = 'intern';
-  if (cleanEmail === 'thanapat2220@gmail.com') {
-    role = 'payroll_admin';
-  }
+  // Every new registration strictly creates role: 'intern' (zero exceptions based on email matching any other collection or record)
+  const role: UserRole = 'intern';
 
   const initials = profileData.name
     ? profileData.name

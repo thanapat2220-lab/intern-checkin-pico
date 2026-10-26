@@ -246,6 +246,23 @@ export async function purgeMockDataFromFirestore(): Promise<void> {
         }
       }
     } catch (_) {}
+
+    // 6. Permanently wipe any legacy supervisor records (isLightweight: true, role: 'supervisor', or sup_ IDs)
+    try {
+      const userSnap = await getDocs(collection(db, USERS_COLLECTION));
+      for (const d of userSnap.docs) {
+        const data = d.data();
+        if (
+          data.isLightweight === true ||
+          data.role === 'supervisor' ||
+          d.id.startsWith('sup_') ||
+          d.id.startsWith('supervisor-') ||
+          data.email?.includes('supervisor')
+        ) {
+          await deleteDoc(d.ref);
+        }
+      }
+    } catch (_) {}
   } catch (error) {
     console.warn('Mock data cleanup notice:', error);
   }
@@ -307,7 +324,7 @@ export async function createStaffAccount(data: {
 }): Promise<UserProfile> {
   const cleanEmail = data.email.trim().toLowerCase();
   const cleanName = data.name.trim();
-  const targetRole: UserRole = data.role === 'payroll_admin' ? 'payroll_admin' : 'supervisor';
+  const targetRole: UserRole = 'payroll_admin';
 
   // Check if a user with this email already exists
   const existingSnap = await getDocs(
@@ -330,8 +347,7 @@ export async function createStaffAccount(data: {
   }
 
   // Generate a distinct staff document ID
-  const prefix = targetRole === 'payroll_admin' ? 'adm' : 'sup';
-  const docId = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const docId = `adm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const initials =
     cleanName
       .split(' ')
@@ -339,14 +355,14 @@ export async function createStaffAccount(data: {
       .filter(Boolean)
       .join('')
       .toUpperCase()
-      .slice(0, 2) || (cleanEmail[0] || 'S').toUpperCase();
+      .slice(0, 2) || (cleanEmail[0] || 'A').toUpperCase();
 
   const staffProfile: UserProfile = {
     id: docId,
     name: cleanName,
     email: cleanEmail,
     role: targetRole,
-    department: data.department?.trim() || (targetRole === 'payroll_admin' ? 'Finance & Payroll' : 'Operations'),
+    department: data.department?.trim() || 'Finance & Payroll',
     team: data.team?.trim() || 'General',
     initials,
     internshipPeriod: 'Full Time',
@@ -355,7 +371,7 @@ export async function createStaffAccount(data: {
     accountNumber: '',
     supervisorId: null,
     supervisorName: null,
-    isLightweight: true,
+    isLightweight: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -364,154 +380,6 @@ export async function createStaffAccount(data: {
   await setDoc(userRef, cleanFirestoreData(staffProfile));
 
   return staffProfile;
-}
-
-/**
- * Create a lightweight supervisor record in Firestore without requiring Firebase Auth.
- * Used by Payroll Admins to immediately assign supervisors and generate magic links.
- */
-export async function createLightweightSupervisor(data: {
-  name: string;
-  email: string;
-  department?: string;
-  team?: string;
-}): Promise<UserProfile> {
-  return createStaffAccount({ ...data, role: 'supervisor' });
-}
-
-/**
- * If a staff member (supervisor or admin) with an existing lightweight record registers with Firebase Auth,
- * link their profile to their new authenticated UID and migrate intern assignments seamlessly.
- */
-export async function linkLightweightSupervisorToAuth(
-  firebaseUid: string,
-  email: string,
-  newProfileData?: Partial<UserProfile>
-): Promise<UserProfile | null> {
-  const cleanEmail = email.trim().toLowerCase();
-
-  // Search for an existing lightweight record pre-provisioned by admin with this email
-  const existingSnap = await getDocs(
-    query(collection(db, USERS_COLLECTION), where('email', '==', cleanEmail))
-  );
-
-  let existingProfile: UserProfile | null = null;
-  let oldDocId: string | null = null;
-
-  for (const docSnap of existingSnap.docs) {
-    if (docSnap.id !== firebaseUid) {
-      existingProfile = docSnap.data() as UserProfile;
-      oldDocId = docSnap.id;
-      break;
-    }
-  }
-
-  // Security Guard: If no pre-provisioned staff document exists and not owner email,
-  // return null! NEVER auto-create or promote an arbitrary user to supervisor!
-  const isOwnerEmail = cleanEmail === 'thanapat2220@gmail.com';
-  const hasStaffRole =
-    existingProfile?.role === 'supervisor' ||
-    existingProfile?.role === 'payroll_admin' ||
-    (existingProfile?.role as string) === 'admin';
-
-  if (!existingProfile && !isOwnerEmail) {
-    return null;
-  }
-
-  if (existingProfile && !hasStaffRole && !isOwnerEmail) {
-    // Existing profile is an intern or non-staff, do not promote
-    return null;
-  }
-
-  const name = newProfileData?.name || existingProfile?.name || email.split('@')[0];
-  const initials =
-    name
-      .split(' ')
-      .map((n) => n[0])
-      .filter(Boolean)
-      .join('')
-      .toUpperCase()
-      .slice(0, 2) || (cleanEmail[0] || 'U').toUpperCase();
-
-  // Determine role: Only allow payroll_admin or supervisor if actually in the existing pre-provisioned profile
-  let role: UserRole = 'supervisor';
-  if (isOwnerEmail || existingProfile?.role === 'payroll_admin' || (existingProfile?.role as string) === 'admin') {
-    role = 'payroll_admin';
-  } else if (existingProfile?.role === 'supervisor') {
-    role = 'supervisor';
-  } else {
-    return null;
-  }
-
-  const mergedProfile: UserProfile = {
-    id: firebaseUid,
-    name,
-    email: cleanEmail,
-    role,
-    department: newProfileData?.department || existingProfile?.department || (role === 'payroll_admin' ? 'Finance & Payroll' : 'Operations'),
-    team: newProfileData?.team || existingProfile?.team || 'General',
-    avatarUrl: newProfileData?.avatarUrl || existingProfile?.avatarUrl,
-    initials,
-    internshipPeriod: 'Full Time',
-    dailyRateTHB: 0,
-    bankName: newProfileData?.bankName || existingProfile?.bankName || '',
-    accountNumber: newProfileData?.accountNumber || existingProfile?.accountNumber || '',
-    supervisorId: null,
-    supervisorName: null,
-    isLightweight: false,
-    updatedAt: new Date().toISOString(),
-  };
-
-  // Save at users/{firebaseUid}
-  const targetUserRef = doc(db, USERS_COLLECTION, firebaseUid);
-  await setDoc(targetUserRef, mergedProfile, { merge: true });
-
-  // If there was an old lightweight record with a different document ID, migrate references
-  if (oldDocId && oldDocId !== firebaseUid) {
-    try {
-      // 1. Migrate intern assignments
-      const internsSnap = await getDocs(
-        query(collection(db, USERS_COLLECTION), where('supervisorId', '==', oldDocId))
-      );
-      for (const d of internsSnap.docs) {
-        await updateDoc(d.ref, {
-          supervisorId: firebaseUid,
-          supervisorName: name,
-          updatedAt: new Date().toISOString(),
-        });
-      }
-
-      // 2. Migrate monthly reviews
-      const reviewsSnap = await getDocs(
-        query(collection(db, REVIEWS_COLLECTION), where('supervisorId', '==', oldDocId))
-      );
-      for (const d of reviewsSnap.docs) {
-        await updateDoc(d.ref, {
-          supervisorId: firebaseUid,
-          supervisorName: name,
-          updatedAt: new Date().toISOString(),
-        });
-      }
-
-      // 3. Migrate approval links
-      const linksSnap = await getDocs(
-        query(collection(db, APPROVAL_LINKS_COLLECTION), where('supervisorId', '==', oldDocId))
-      );
-      for (const d of linksSnap.docs) {
-        await updateDoc(d.ref, {
-          supervisorId: firebaseUid,
-          supervisorName: name,
-        });
-      }
-
-      // 4. Delete the old document to avoid duplicate listings
-      await deleteDoc(doc(db, USERS_COLLECTION, oldDocId));
-    } catch (migErr) {
-      console.warn('Notice during supervisor profile migration:', migErr);
-    }
-  }
-
-  return mergedProfile;
 }
 
 /**
