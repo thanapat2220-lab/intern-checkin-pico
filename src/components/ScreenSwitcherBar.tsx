@@ -26,10 +26,9 @@ export const ScreenSwitcherBar: React.FC<ScreenSwitcherBarProps> = ({
 
     if (currentUser.role === 'intern') {
       return [
-        { id: 'intern_checkin', label: 'Check-in', icon: 'fingerprint', badge: 'Mobile' },
-        { id: 'intern_history', label: 'History', icon: 'history', badge: 'Timecard' },
-        { id: 'attendance_logs', label: 'Attendance Log', icon: 'list_alt', badge: 'Review' },
-        { id: 'intern_profile', label: 'Profile', icon: 'person', badge: 'Intern' },
+        { id: 'intern_checkin', label: 'Check-in View', icon: 'fingerprint', badge: 'Mobile' },
+        { id: 'intern_history', label: 'Attendance History', icon: 'history', badge: 'Timecard' },
+        { id: 'intern_profile', label: 'My Profile', icon: 'person', badge: 'Intern' },
       ];
     }
 
@@ -42,6 +41,17 @@ export const ScreenSwitcherBar: React.FC<ScreenSwitcherBarProps> = ({
   };
 
   const navScreens = getNavScreens();
+
+  const handleSelectScreen = (screen: ScreenView) => {
+    if (currentUser?.role === 'intern') {
+      const allowed: ScreenView[] = ['intern_checkin', 'intern_history', 'intern_profile'];
+      if (!allowed.includes(screen)) {
+        onSelectScreen('intern_checkin');
+        return;
+      }
+    }
+    onSelectScreen(screen);
+  };
 
   return (
     <div className="bg-[#041b3c] text-white px-4 py-2 flex items-center justify-between gap-3 text-xs border-b border-[#1d3052] z-50 sticky top-0 shadow-md flex-wrap print:hidden">
@@ -66,7 +76,7 @@ export const ScreenSwitcherBar: React.FC<ScreenSwitcherBarProps> = ({
           return (
             <button
               key={s.id}
-              onClick={() => onSelectScreen(s.id)}
+              onClick={() => handleSelectScreen(s.id)}
               className={`px-3 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap cursor-pointer ${
                 isActive
                   ? 'bg-[#0052cc] text-white shadow-xs'

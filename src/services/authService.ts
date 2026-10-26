@@ -40,7 +40,7 @@ export function listenToAuthState(
         }
         callback(firebaseUser, { ...rawData, role });
       } else {
-        // Check if there was an existing lightweight supervisor or admin profile matching this email
+        // Check if there was an existing lightweight supervisor or admin profile pre-provisioned for this email
         try {
           const linkedProfile = await linkLightweightSupervisorToAuth(
             firebaseUser.uid,
@@ -49,37 +49,42 @@ export function listenToAuthState(
               name: firebaseUser.displayName || undefined,
             }
           );
-          callback(firebaseUser, linkedProfile);
+          if (linkedProfile) {
+            callback(firebaseUser, linkedProfile);
+            return;
+          }
         } catch (linkErr) {
-          console.warn('Fallback standard profile creation:', linkErr);
-          const initials = firebaseUser.displayName
-            ? firebaseUser.displayName
-                .split(' ')
-                .map((n) => n[0])
-                .join('')
-                .toUpperCase()
-                .slice(0, 2)
-            : (firebaseUser.email?.[0] || 'U').toUpperCase();
-
-          const newProfile: UserProfile = {
-            id: firebaseUser.uid,
-            name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
-            email: firebaseUser.email || '',
-            role: (firebaseUser.email?.toLowerCase() === 'thanapat2220@gmail.com') ? 'payroll_admin' : 'intern',
-            department: 'Engineering',
-            team: 'General',
-            initials,
-            internshipPeriod: 'Jul 1 - Dec 31',
-            dailyRateTHB: 400,
-            bankName: 'Kasikorn',
-            accountNumber: '',
-            supervisorId: null,
-            supervisorName: null,
-          };
-
-          await setDoc(userRef, cleanFirestoreData(newProfile));
-          callback(firebaseUser, newProfile);
+          console.warn('Pre-provisioned staff check fallback:', linkErr);
         }
+
+        const cleanEmail = (firebaseUser.email || '').trim().toLowerCase();
+        const initials = firebaseUser.displayName
+          ? firebaseUser.displayName
+              .split(' ')
+              .map((n) => n[0])
+              .join('')
+              .toUpperCase()
+              .slice(0, 2)
+          : (cleanEmail[0] || 'U').toUpperCase();
+
+        const newProfile: UserProfile = {
+          id: firebaseUser.uid,
+          name: firebaseUser.displayName || cleanEmail.split('@')[0] || 'User',
+          email: cleanEmail,
+          role: cleanEmail === 'thanapat2220@gmail.com' ? 'payroll_admin' : 'intern',
+          department: 'Engineering',
+          team: 'General',
+          initials,
+          internshipPeriod: 'Jul 1 - Dec 31',
+          dailyRateTHB: 400,
+          bankName: 'Kasikorn Bank (KBANK)',
+          accountNumber: '',
+          supervisorId: null,
+          supervisorName: null,
+        };
+
+        await setDoc(userRef, cleanFirestoreData(newProfile));
+        callback(firebaseUser, newProfile);
       }
     } else {
       callback(null, null);
@@ -110,13 +115,35 @@ export async function loginWithEmail(email: string, pass: string): Promise<UserP
     return { ...rawData, role };
   }
 
-  // Link or create
-  const profile = await linkLightweightSupervisorToAuth(
+  // Link pre-provisioned staff if available
+  const linkedProfile = await linkLightweightSupervisorToAuth(
     userCredential.user.uid,
     email,
     {}
   );
-  return profile;
+  if (linkedProfile) {
+    return linkedProfile;
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const initials = (cleanEmail[0] || 'U').toUpperCase();
+  const fallbackProfile: UserProfile = {
+    id: userCredential.user.uid,
+    name: userCredential.user.displayName || cleanEmail.split('@')[0] || 'User',
+    email: cleanEmail,
+    role: cleanEmail === 'thanapat2220@gmail.com' ? 'payroll_admin' : 'intern',
+    department: 'Engineering',
+    team: 'General',
+    initials,
+    internshipPeriod: 'Jul 1 - Dec 31',
+    dailyRateTHB: 400,
+    bankName: 'Kasikorn Bank (KBANK)',
+    accountNumber: '',
+    supervisorId: null,
+    supervisorName: null,
+  };
+  await setDoc(userRef, cleanFirestoreData(fallbackProfile));
+  return fallbackProfile;
 }
 
 /**

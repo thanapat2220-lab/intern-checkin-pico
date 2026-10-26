@@ -387,10 +387,10 @@ export async function linkLightweightSupervisorToAuth(
   firebaseUid: string,
   email: string,
   newProfileData?: Partial<UserProfile>
-): Promise<UserProfile> {
+): Promise<UserProfile | null> {
   const cleanEmail = email.trim().toLowerCase();
 
-  // Search for an existing record by email
+  // Search for an existing lightweight record pre-provisioned by admin with this email
   const existingSnap = await getDocs(
     query(collection(db, USERS_COLLECTION), where('email', '==', cleanEmail))
   );
@@ -406,6 +406,23 @@ export async function linkLightweightSupervisorToAuth(
     }
   }
 
+  // Security Guard: If no pre-provisioned staff document exists and not owner email,
+  // return null! NEVER auto-create or promote an arbitrary user to supervisor!
+  const isOwnerEmail = cleanEmail === 'thanapat2220@gmail.com';
+  const hasStaffRole =
+    existingProfile?.role === 'supervisor' ||
+    existingProfile?.role === 'payroll_admin' ||
+    (existingProfile?.role as string) === 'admin';
+
+  if (!existingProfile && !isOwnerEmail) {
+    return null;
+  }
+
+  if (existingProfile && !hasStaffRole && !isOwnerEmail) {
+    // Existing profile is an intern or non-staff, do not promote
+    return null;
+  }
+
   const name = newProfileData?.name || existingProfile?.name || email.split('@')[0];
   const initials =
     name
@@ -416,23 +433,14 @@ export async function linkLightweightSupervisorToAuth(
       .toUpperCase()
       .slice(0, 2) || (cleanEmail[0] || 'U').toUpperCase();
 
-  // Determine role: preserve existing admin/supervisor roles or normalize custom 'admin'
+  // Determine role: Only allow payroll_admin or supervisor if actually in the existing pre-provisioned profile
   let role: UserRole = 'supervisor';
-  const rawExistingRole = existingProfile?.role as string | undefined;
-  const rawNewRole = newProfileData?.role as string | undefined;
-
-  if (
-    rawExistingRole === 'payroll_admin' ||
-    rawExistingRole === 'admin' ||
-    rawNewRole === 'payroll_admin' ||
-    rawNewRole === 'admin' ||
-    cleanEmail === 'thanapat2220@gmail.com'
-  ) {
+  if (isOwnerEmail || existingProfile?.role === 'payroll_admin' || (existingProfile?.role as string) === 'admin') {
     role = 'payroll_admin';
-  } else if (rawExistingRole === 'supervisor' || rawNewRole === 'supervisor') {
+  } else if (existingProfile?.role === 'supervisor') {
     role = 'supervisor';
-  } else if (existingProfile?.role) {
-    role = existingProfile.role;
+  } else {
+    return null;
   }
 
   const mergedProfile: UserProfile = {

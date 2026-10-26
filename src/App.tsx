@@ -57,15 +57,18 @@ export default function App() {
     purgeMockDataFromFirestore().catch(console.error);
 
     // Listen to Firebase Auth state
+    // Direct to appropriate screen on login if currently on login screen or if intern was on an admin screen
     const unsubscribeAuth = listenToAuthState((firebaseUser, profile) => {
       setAuthLoading(false);
       if (firebaseUser && profile) {
         setCurrentUser(profile);
-        // Direct to appropriate screen on login if currently on login screen
-        if (currentScreen === 'login') {
-          if (profile.role === 'intern') {
+        if (profile.role === 'intern') {
+          // Interns must always land directly on intern_checkin
+          if (currentScreen === 'login' || currentScreen === 'payroll_admin' || currentScreen === 'admin_interns' || currentScreen === 'attendance_logs') {
             setCurrentScreen('intern_checkin');
-          } else {
+          }
+        } else {
+          if (currentScreen === 'login') {
             setCurrentScreen('payroll_admin');
           }
         }
@@ -77,6 +80,19 @@ export default function App() {
 
     return () => unsubscribeAuth();
   }, [currentScreen]);
+
+  // Strict Route Guard: enforce that interns can NEVER navigate to administrative or sensitive screens
+  useEffect(() => {
+    if (!currentUser) return;
+
+    if (currentUser.role === 'intern') {
+      const allowedInternScreens: ScreenView[] = ['intern_checkin', 'intern_history', 'intern_profile'];
+      if (!allowedInternScreens.includes(currentScreen)) {
+        console.warn(`[Security Guard] Blocked access to "${currentScreen}" for intern "${currentUser.name}". Redirecting to Check-in View.`);
+        setCurrentScreen('intern_checkin');
+      }
+    }
+  }, [currentUser, currentScreen]);
 
   // 2. Real-time Firestore Subscriptions for data
   useEffect(() => {
@@ -99,20 +115,27 @@ export default function App() {
       setSupervisorReviews(reviews);
     });
 
-    // Payroll subscription
-    const unsubPayroll = subscribeToPayroll((records) => {
-      setPayrollRecords(records);
-    });
+    // Subscriptions for privileged data: only subscribe if supervisor or admin
+    const unsubPayroll =
+      currentUser.role === 'intern'
+        ? () => {}
+        : subscribeToPayroll((records) => {
+            setPayrollRecords(records);
+          });
 
-    // Users subscription for Admin Intern Management & Supervisor directories
-    const unsubUsers = subscribeToUsers((users) => {
-      setAllUsers(users);
-    });
+    const unsubUsers =
+      currentUser.role === 'intern'
+        ? () => {}
+        : subscribeToUsers((users) => {
+            setAllUsers(users);
+          });
 
-    // Finalized payroll cycles subscription (audit trail)
-    const unsubCycles = subscribeToFinalizedPayrollCycles((cycles) => {
-      setFinalizedCycles(cycles);
-    });
+    const unsubCycles =
+      currentUser.role === 'intern'
+        ? () => {}
+        : subscribeToFinalizedPayrollCycles((cycles) => {
+            setFinalizedCycles(cycles);
+          });
 
     return () => {
       unsubAttendance();
@@ -247,6 +270,32 @@ export default function App() {
 
     if (!currentUser || currentScreen === 'login') {
       return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+    }
+
+    // Hard Gatekeeper: An intern role can strictly ONLY render intern screens.
+    // Even if state temporarily points to an admin screen, render the Check-in View.
+    if (currentUser.role === 'intern') {
+      if (
+        currentScreen !== 'intern_checkin' &&
+        currentScreen !== 'intern_history' &&
+        currentScreen !== 'intern_profile'
+      ) {
+        return (
+          <CheckInScreen
+            user={currentUser}
+            attendanceLogs={attendanceRecords}
+            isAttendanceLoaded={isAttendanceLoaded}
+            onCheckIn={handleCheckIn}
+            onCheckOut={handleCheckOut}
+            onNavigate={(tab) => {
+              if (tab === 'checkin') setCurrentScreen('intern_checkin');
+              if (tab === 'history') setCurrentScreen('intern_history');
+              if (tab === 'profile') setCurrentScreen('intern_profile');
+            }}
+            onOpenMenu={() => setIsDrawerOpen(true)}
+          />
+        );
+      }
     }
 
     switch (currentScreen) {
