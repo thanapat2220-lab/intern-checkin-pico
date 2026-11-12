@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { UserProfile, AttendanceRecord } from '../types';
 import { PrintableInternAttendanceForm } from './PrintableInternAttendanceForm';
 import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
@@ -170,17 +171,21 @@ export const InternAttendanceFormModal: React.FC<InternAttendanceFormModalProps>
         </div>
       </div>
 
-      {/* 2. Standalone Print-Only Container (for window.print / PDF) */}
-      <div className="hidden print:block attendance-form-print-container p-0 m-0">
-        {currentIntern && (
-          <PrintableInternAttendanceForm
-            intern={currentIntern}
-            monthYear={selectedMonth}
-            records={attendanceRecords}
-            supervisorName={resolvedSupervisorName}
-          />
+      {/* 2. Standalone Print-Only Container (Portaled to body for isolated window.print / PDF) */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <div className="hidden print:block attendance-form-print attendance-form-print-container p-0 m-0">
+            {currentIntern && (
+              <PrintableInternAttendanceForm
+                intern={currentIntern}
+                monthYear={selectedMonth}
+                records={attendanceRecords}
+                supervisorName={resolvedSupervisorName}
+              />
+            )}
+          </div>,
+          document.body
         )}
-      </div>
     </>
   );
 };

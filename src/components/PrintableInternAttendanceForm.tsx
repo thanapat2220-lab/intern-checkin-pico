@@ -131,19 +131,19 @@ export const PrintableInternAttendanceForm: React.FC<PrintableInternAttendanceFo
       </div>
 
       {/* 3. Main Attendance Table (1 through 28/29/30/31) */}
-      <table className="w-full border-collapse border border-black text-[10px] leading-tight">
+      <table className="w-full table-fixed border-collapse border border-black text-[10px] leading-tight">
         <thead>
           <tr className="bg-gray-100 text-black border-b border-black">
-            <th className="border border-black p-1 text-center w-[46px] font-bold">
+            <th className="border border-black p-1 text-center w-[42px] font-bold">
               Date
             </th>
-            <th className="border border-black p-1 text-center font-bold w-[95px]">
+            <th className="border border-black p-1 text-center font-bold w-[88px]">
               Time - Start
             </th>
-            <th className="border border-black p-1 text-center font-bold w-[95px]">
+            <th className="border border-black p-1 text-center font-bold w-[88px]">
               Time - End
             </th>
-            <th className="border border-black p-1 text-center font-bold w-[120px]">
+            <th className="border border-black p-1 text-center font-bold w-[115px]">
               Intern's Signature
             </th>
             <th className="border border-black p-1 text-left font-bold pl-2">
@@ -161,22 +161,24 @@ export const PrintableInternAttendanceForm: React.FC<PrintableInternAttendanceFo
             return (
               <tr
                 key={dayNum}
-                className="border-b border-black/50 h-[21px] max-h-[22px] even:bg-gray-50/40"
+                className="border-b border-black/50 h-[21px] max-h-[21px] even:bg-gray-50/40"
               >
                 <td className="border border-black p-0.5 text-center font-semibold text-black">
                   {dayNum}
                 </td>
-                <td className="border border-black p-0.5 text-center font-mono text-gray-900">
+                <td className="border border-black p-0.5 text-center font-mono text-gray-900 whitespace-nowrap">
                   {checkIn}
                 </td>
-                <td className="border border-black p-0.5 text-center font-mono text-gray-900">
+                <td className="border border-black p-0.5 text-center font-mono text-gray-900 whitespace-nowrap">
                   {checkOut}
                 </td>
                 <td className="border border-black p-0.5 text-center">
                   {/* Empty for physical pen signature */}
                 </td>
-                <td className="border border-black px-2 py-0.5 text-gray-800 text-[9.5px] truncate max-w-[280px]">
-                  {remark}
+                <td className="border border-black px-2 py-0.5 text-gray-800 text-[9.5px] overflow-hidden">
+                  <div className="truncate w-full" title={remark}>
+                    {remark}
+                  </div>
                 </td>
               </tr>
             );
@@ -185,7 +187,7 @@ export const PrintableInternAttendanceForm: React.FC<PrintableInternAttendanceFo
       </table>
 
       {/* 4. Bottom Signature Section: Supervisor & Date on Same Line */}
-      <div className="mt-5 pt-3 flex items-center justify-between text-[11px] font-semibold text-black break-inside-avoid">
+      <div className="mt-4 pt-2 flex items-center justify-between text-[11px] font-semibold text-black break-inside-avoid">
         <div className="flex items-baseline gap-1.5">
           <span>Direct Supervisor's signature:</span>
           <span className="font-normal tracking-tight">___________________________</span>

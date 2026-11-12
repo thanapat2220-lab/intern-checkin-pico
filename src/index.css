@@ -84,6 +84,9 @@
     color: #000000 !important;
     margin: 0 !important;
     padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
     font-size: 9.5pt !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
@@ -103,6 +106,39 @@
 
   .print\:table {
     display: table !important;
+  }
+
+  /* Strict Print Isolation for Attendance Form & Payroll Report:
+     1. Collapse all non-print body children (#root, modals, drawers) so background pages produce 0 extra pages.
+     2. Hide all top-level elements via visibility: hidden, then restore visibility ONLY for the active printable container.
+     3. Position the printable container absolutely at the top-left of the printed page. */
+  body:has(.attendance-form-print) > *:not(.attendance-form-print),
+  body:has(.payroll-report-print) > *:not(.payroll-report-print) {
+    display: none !important;
+  }
+
+  body:has(.attendance-form-print) *,
+  body:has(.payroll-report-print) * {
+    visibility: hidden !important;
+  }
+
+  body:has(.attendance-form-print) .attendance-form-print,
+  body:has(.attendance-form-print) .attendance-form-print *,
+  body:has(.payroll-report-print) .payroll-report-print,
+  body:has(.payroll-report-print) .payroll-report-print * {
+    visibility: visible !important;
+  }
+
+  .attendance-form-print,
+  .payroll-report-print {
+    display: block !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
   }
 
   /* Table and row pagination rules */

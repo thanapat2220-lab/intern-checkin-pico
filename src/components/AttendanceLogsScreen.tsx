@@ -531,7 +531,8 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
   };
 
   return (
-    <div className="flex-1 bg-[#F4F5F7] min-h-screen flex flex-col">
+    <>
+      <div className="flex-1 bg-[#F4F5F7] min-h-screen flex flex-col print:hidden">
       {/* Top Navigation & App Header */}
       <header className="bg-white border-b border-[#c3c6d6]/60 sticky top-0 z-20 shadow-2xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -2028,15 +2029,6 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
           </div>
         </div>
       )}
-      {/* Per-Intern Attendance Form Modal (Pico Format) */}
-      <InternAttendanceFormModal
-        isOpen={isPrintFormOpen}
-        onClose={() => setIsPrintFormOpen(false)}
-        interns={effectiveUsers.filter((u) => u.role === 'intern')}
-        initialInternId={printFormInternId || perInternSelectedId}
-        attendanceRecords={effectiveRecords}
-        allUsers={effectiveUsers}
-      />
 
       {/* 1. Admin Edit Attendance Record Modal */}
       <EditAttendanceRecordModal
@@ -2118,5 +2110,16 @@ export const AttendanceLogsScreen: React.FC<AttendanceLogsScreenProps> = ({
         </div>
       )}
     </div>
+
+    {/* Per-Intern Attendance Form Modal (Pico Format) */}
+    <InternAttendanceFormModal
+      isOpen={isPrintFormOpen}
+      onClose={() => setIsPrintFormOpen(false)}
+      interns={effectiveUsers.filter((u) => u.role === 'intern')}
+      initialInternId={printFormInternId || perInternSelectedId}
+      attendanceRecords={effectiveRecords}
+      allUsers={effectiveUsers}
+    />
+  </>
   );
 };

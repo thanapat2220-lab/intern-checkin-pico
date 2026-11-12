@@ -268,7 +268,8 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
   };
 
   return (
-    <div className="bg-[#F4F5F7] text-[#041b3c] min-h-screen flex flex-col font-sans antialiased text-[14px]">
+    <>
+      <div className="bg-[#F4F5F7] text-[#041b3c] min-h-screen flex flex-col font-sans antialiased text-[14px] print:hidden">
       {/* Toast Notification */}
       {toastMessage && (
         <div className="fixed top-16 right-6 z-50 bg-[#041b3c] text-white px-5 py-3 rounded-lg shadow-xl flex items-center gap-3 font-medium text-xs border border-[#c3c6d6] animate-bounce">
@@ -1184,16 +1185,18 @@ export const InternsManagementScreen: React.FC<InternsManagementScreenProps> = (
           </div>
         </div>
       )}
-      {/* Per-Intern Attendance Form Modal (Pico Format) */}
-      <InternAttendanceFormModal
-        isOpen={isPrintAttendanceModalOpen}
-        onClose={() => setIsPrintAttendanceModalOpen(false)}
-        interns={interns}
-        initialInternId={printSelectedInternId}
-        attendanceRecords={effectiveAttendance}
-        allUsers={allUsers}
-      />
     </div>
+
+    {/* Per-Intern Attendance Form Modal (Pico Format) */}
+    <InternAttendanceFormModal
+      isOpen={isPrintAttendanceModalOpen}
+      onClose={() => setIsPrintAttendanceModalOpen(false)}
+      interns={interns}
+      initialInternId={printSelectedInternId}
+      attendanceRecords={effectiveAttendance}
+      allUsers={allUsers}
+    />
+  </>
   );
 };
 

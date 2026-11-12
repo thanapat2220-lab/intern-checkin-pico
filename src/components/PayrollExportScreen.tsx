@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { PayrollRecord, UserProfile, AttendanceRecord, FinalizedPayrollCycle } from '../types';
 import { formatMonthYear, getRecentMonthDropdownOptions } from '../utils/dateUtils';
 import { getMergedRecordNotes } from '../utils/noteUtils';
@@ -1726,16 +1727,20 @@ export const PayrollExportScreen: React.FC<PayrollExportScreenProps> = ({
       )}
     </div>
 
-      {/* Standalone Print-Only Container (Active for browser print / Save as PDF) */}
-      <div className="hidden print:block payroll-print-container p-0 m-0">
-        <PrintablePayrollReport
-          records={filteredRecords}
-          selectedMonth={selectedMonth}
-          selectedDepartment={selectedDepartment}
-          totalDaysWorked={totalDaysWorked}
-          totalPayrollTHB={totalPayrollTHB}
-        />
-      </div>
+      {/* Standalone Print-Only Container (Portaled to body for isolated browser print / Save as PDF) */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <div className="hidden print:block payroll-report-print payroll-print-container p-0 m-0">
+            <PrintablePayrollReport
+              records={filteredRecords}
+              selectedMonth={selectedMonth}
+              selectedDepartment={selectedDepartment}
+              totalDaysWorked={totalDaysWorked}
+              totalPayrollTHB={totalPayrollTHB}
+            />
+          </div>,
+          document.body
+        )}
 
       {/* Modal: Print Payroll Report Preview */}
       {showPrintReportModal && (
